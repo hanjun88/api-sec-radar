@@ -88,3 +88,62 @@ jobs:
           file: ./Dockerfile.dashboard
           push: false
           tags: sec-radar/dashboard:ci-test
+
+  security-gate:
+    name: "Security: Trivy Vulnerability Scan & CycloneDX SBOM"
+    runs-on: ubuntu-latest
+    needs: [container-gate]
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Local Images for Static Audit
+        run: |
+          docker build -t sec-radar/ws-bridge:local -f Dockerfile.pipeline .
+          docker build -t sec-radar/dashboard:local -f Dockerfile.dashboard .
+
+      - name: Trivy Scan — Pipeline Image (CRITICAL, exit-code 1)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: "sec-radar/ws-bridge:local"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL"
+
+      - name: Trivy Scan — Dashboard Image (CRITICAL, exit-code 1)
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: "sec-radar/dashboard:local"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: "os,library"
+          severity: "CRITICAL"
+
+      - name: Generate CycloneDX SBOM — Pipeline Image
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: "sec-radar/ws-bridge:local"
+          format: "cyclonedx"
+          output: "sbom-pipeline.cdx.json"
+
+      - name: Generate CycloneDX SBOM — Dashboard Image
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: "sec-radar/dashboard:local"
+          format: "cyclonedx"
+          output: "sbom-dashboard.cdx.json"
+
+      - name: Upload SBOM Artifacts (30-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cyclonedx-sbom-reports
+          path: |
+            sbom-pipeline.cdx.json
+            sbom-dashboard.cdx.json
+          retention-days: 30
