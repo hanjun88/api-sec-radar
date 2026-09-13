@@ -1,5 +1,7 @@
 FROM nginx:1.27-alpine
 
+RUN apk update && apk upgrade --no-cache && rm -rf /var/cache/apk/*
+
 RUN rm -rf /etc/nginx/conf.d/* /usr/share/nginx/html/*
 
 RUN cat <<'EOF' > /etc/nginx/conf.d/dashboard.conf
