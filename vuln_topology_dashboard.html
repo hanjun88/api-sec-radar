@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VulnTopology — 态势感知三维拓扑雷达</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #0a0e17; color: #e0e6f0;
+    font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace;
+  }
+  #canvas-container { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .hud {
+    position: fixed; z-index: 10; pointer-events: none;
+    font-size: 11px; letter-spacing: 0.5px;
+  }
+  .hud-tl { top: 20px; left: 24px; }
+  .hud-tr { top: 20px; right: 24px; text-align: right; }
+  .hud-bl { bottom: 20px; left: 24px; }
+  .hud-br { bottom: 20px; right: 24px; text-align: right; }
+  .hud-label { color: #5a6a8a; text-transform: uppercase; font-size: 9px; margin-bottom: 4px; }
+  .hud-value { color: #e0e6f0; font-size: 14px; font-weight: 600; }
+  .hud-value.alert { color: #ff3344; }
+  .hud-value.safe { color: #00ff88; }
+  .hud-value.warn { color: #ffaa00; }
+  .divider { width: 100%; height: 1px; background: linear-gradient(90deg, #1a2540, transparent); margin: 12px 0; }
+  .event-log { max-height: 200px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #2a3a5a transparent; }
+  .event-log::-webkit-scrollbar { width: 3px; }
+  .event-log::-webkit-scrollbar-thumb { background: #2a3a5a; }
+  .event-item {
+    padding: 4px 8px; margin-bottom: 2px;
+    border-left: 2px solid #2a3a5a;
+    background: rgba(20, 30, 50, 0.6);
+    animation: slideIn 0.3s ease-out;
+  }
+  .event-item.vuln { border-left-color: #ff3344; }
+  .event-item.safe { border-left-color: #00ff88; }
+  .event-item.blocked { border-left-color: #ffaa00; }
+  .event-method { color: #7a8aaa; font-size: 9px; }
+  .event-endpoint { color: #c0d0e8; font-size: 10px; word-break: break-all; }
+  .event-meta { color: #5a6a8a; font-size: 9px; margin-top: 2px; }
+  @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+  .pulse-indicator {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 50%; background: #ff3344;
+    animation: pulse 1.5s ease-in-out infinite;
+    margin-right: 6px; vertical-align: middle;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255,51,68,0.6); }
+    50% { opacity: 0.6; box-shadow: 0 0 0 8px rgba(255,51,68,0); }
+  }
+  .grid-overlay {
+    position: fixed; inset: 0; pointer-events: none; z-index: 5;
+    background-image:
+      linear-gradient(rgba(40, 60, 100, 0.08) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(40, 60, 100, 0.08) 1px, transparent 1px);
+    background-size: 40px 40px;
+  }
+  .scan-line {
+    position: fixed; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, rgba(0,255,136,0.3), transparent);
+    animation: scan 4s linear infinite; z-index: 6; pointer-events: none;
+  }
+  @keyframes scan { 0% { top: 0; } 100% { top: 100%; } }
+  .controls {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    z-index: 20; display: flex; gap: 8px; pointer-events: auto;
+  }
+  .ctrl-btn {
+    background: rgba(20, 30, 50, 0.8); border: 1px solid #2a3a5a;
+    color: #8a9aba; padding: 6px 14px; font-size: 10px;
+    font-family: inherit; cursor: pointer; letter-spacing: 0.5px;
+    transition: all 0.15s; text-transform: uppercase;
+  }
+  .ctrl-btn:hover { border-color: #4a6a9a; color: #c0d0e8; background: rgba(30, 45, 70, 0.9); }
+  .ctrl-btn.active { border-color: #00ff88; color: #00ff88; }
+  .ctrl-btn.danger:hover { border-color: #ff3344; color: #ff3344; }
+  .ctrl-btn.live { border-color: #4a8aff; color: #4a8aff; }
+</style>
+</head>
+<body>
+<div class="grid-overlay"></div>
+<div class="scan-line"></div>
+<div id="canvas-container"></div>
+<div class="hud hud-tl">
+  <div class="hud-label">Threat Topology Radar</div>
+  <div class="hud-value" id="node-count">0 NODES</div>
+  <div class="divider"></div>
+  <div class="hud-label">Active Scan</div>
+  <div class="hud-value"><span class="pulse-indicator" id="pulse-dot" style="display:none"></span><span id="scan-status">IDLE</span></div>
+</div>
+<div class="hud hud-tr">
+  <div class="hud-label">Verdict Distribution</div>
+  <div class="hud-value alert" id="vuln-count">0 VULN</div>
+  <div class="hud-value safe" id="safe-count">0 SAFE</div>
+  <div class="hud-value warn" id="blocked-count">0 BLOCKED</div>
+</div>
+<div class="hud hud-bl">
+  <div class="hud-label">Event Stream</div>
+  <div class="event-log" id="event-log"></div>
+</div>
+<div class="hud hud-br">
+  <div class="hud-label">Pipeline</div>
+  <div class="hud-value" id="pipeline-status">READY</div>
+  <div class="divider"></div>
+  <div class="hud-label">FPS</div>
+  <div class="hud-value" id="fps">60</div>
+</div>
+<div class="controls">
+  <button class="ctrl-btn active" id="btn-auto">AUTO SIM</button>
+  <button class="ctrl-btn" id="btn-batch">BATCH SCAN</button>
+  <button class="ctrl-btn" id="btn-live">LIVE WS</button>
+  <button class="ctrl-btn danger" id="btn-clear">CLEAR</button>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const VulnTopologySkill = {
+  id: 'skill:frontend:vuln-topology',
+  domain: 'render-3d',
+  version: '1.0.0',
+  config: { maxNodes: 128, ringRadius: 3.5, alertColor: 0xff3344, safeColor: 0x00ff88, blockedColor: 0xffaa00 },
+  mount(scene, config) {
+    const group = new THREE.Group();
+    const dummy = new THREE.Object3D();
+    const nodeLookup = new Map();
+    const nodeGeometry = new THREE.SphereGeometry(0.12, 16, 16);
+    const nodeMaterial = new THREE.MeshStandardMaterial({ roughness: 0.2, metalness: 0.8, emissive: 0x000000 });
+    const instancedMesh = new THREE.InstancedMesh(nodeGeometry, nodeMaterial, config.maxNodes);
+    instancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    instancedMesh.count = 0;
+    group.add(instancedMesh);
+    const lineGeometry = new THREE.BufferGeometry();
+    const linePositions = new Float32Array(config.maxNodes * 2 * 3);
+    lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0x2a4a7a, transparent: true, opacity: 0.3 });
+    const connectionLines = new THREE.LineSegments(lineGeometry, lineMaterial);
+    group.add(connectionLines);
+    const pulseGeometry = new THREE.RingGeometry(0.15, 0.6, 48);
+    const pulseMaterial = new THREE.ShaderMaterial({
+      transparent: true, side: THREE.DoubleSide, depthWrite: false,
+      uniforms: { uTime: { value: 0.0 }, uPulseActive: { value: 0.0 }, uPulseColor: { value: new THREE.Color(0xff3344) } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: 'uniform float uTime; uniform float uPulseActive; uniform vec3 uPulseColor; varying vec2 vUv; void main() { if (uPulseActive < 0.5) discard; float dist = distance(vUv, vec2(0.5)); float wave = sin(dist * 30.0 - uTime * 8.0) * 0.5 + 0.5; float fade = smoothstep(0.5, 0.0, dist); float alpha = fade * wave * uPulseActive; gl_FragColor = vec4(uPulseColor, alpha * 0.8); }'
+    });
+    const pulseMesh = new THREE.Mesh(pulseGeometry, pulseMaterial);
+    pulseMesh.rotation.x = -Math.PI / 2;
+    pulseMesh.visible = false;
+    group.add(pulseMesh);
+    const gridHelper = new THREE.GridHelper(20, 40, 0x1a3a5a, 0x0f1f3a);
+    gridHelper.position.y = -0.5;
+    group.add(gridHelper);
+    const hubGeometry = new THREE.OctahedronGeometry(0.3, 0);
+    const hubMaterial = new THREE.MeshStandardMaterial({ color: 0x4a8aff, emissive: 0x2a4a8a, roughness: 0.1, metalness: 0.9 });
+    const hubMesh = new THREE.Mesh(hubGeometry, hubMaterial);
+    group.add(hubMesh);
+    scene.add(group);
+    let activeNodeCount = 0;
+    let pulseTimer = 0;
+    const ingest = (artifact) => {
+      let index = nodeLookup.get(artifact.endpoint);
+      if (index === undefined) {
+        if (activeNodeCount >= config.maxNodes) return null;
+        index = activeNodeCount++;
+        nodeLookup.set(artifact.endpoint, index);
+        instancedMesh.count = activeNodeCount;
+        const ring = Math.floor(index / 16);
+        const angle = (index % 16) * (Math.PI * 2 / 16) + ring * 0.3;
+        const radius = config.ringRadius + ring * 0.9;
+        dummy.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+        dummy.scale.setScalar(1.0);
+        dummy.updateMatrix();
+        instancedMesh.setMatrixAt(index, dummy.matrix);
+        const lineIdx = index * 6;
+        linePositions[lineIdx] = 0; linePositions[lineIdx+1] = 0; linePositions[lineIdx+2] = 0;
+        linePositions[lineIdx+3] = dummy.position.x; linePositions[lineIdx+4] = 0; linePositions[lineIdx+5] = dummy.position.z;
+        lineGeometry.attributes.position.needsUpdate = true;
+        connectionLines.geometry.setDrawRange(0, activeNodeCount * 2);
+      }
+      const color = new THREE.Color(artifact.verdict === 'VULNERABLE' ? config.alertColor : artifact.verdict === 'SAFE' ? config.safeColor : config.blockedColor);
+      instancedMesh.setColorAt(index, color);
+      if (instancedMesh.instanceColor) instancedMesh.instanceColor.needsUpdate = true;
+      instancedMesh.instanceMatrix.needsUpdate = true;
+      if (artifact.verdict === 'VULNERABLE') {
+        const pos = new THREE.Vector3();
+        const mat = new THREE.Matrix4();
+        instancedMesh.getMatrixAt(index, mat);
+        pos.setFromMatrixPosition(mat);
+        pulseMesh.position.copy(pos);
+        pulseMesh.position.y += 0.02;
+        pulseMesh.visible = true;
+        pulseMaterial.uniforms.uPulseActive.value = 1.0;
+        pulseMaterial.uniforms.uPulseColor.value.copy(color);
+        pulseTimer = 2.0;
+      }
+      return { index, activeNodeCount };
+    };
+    return {
+      group, instancedMesh, pulseMesh, pulseMaterial, nodeLookup,
+      activeNodeCount: () => activeNodeCount, dummy, ingest, hubMesh, gridHelper, connectionLines,
+      updatePulse: (delta) => { if (pulseTimer > 0) { pulseTimer -= delta; if (pulseTimer <= 0) { pulseMaterial.uniforms.uPulseActive.value = 0.0; pulseMesh.visible = false; } } },
+      clear: () => { activeNodeCount = 0; instancedMesh.count = 0; nodeLookup.clear(); connectionLines.geometry.setDrawRange(0, 0); pulseMesh.visible = false; pulseMaterial.uniforms.uPulseActive.value = 0.0; }
+    };
+  },
+  update(delta, elapsed, instance) {
+    instance.pulseMaterial.uniforms.uTime.value = elapsed;
+    instance.group.rotation.y = elapsed * 0.05;
+    instance.hubMesh.rotation.y = elapsed * 0.8;
+    instance.hubMesh.rotation.x = Math.sin(elapsed * 0.5) * 0.2;
+    instance.updatePulse(delta);
+  },
+  dispose(scene, instance) {
+    scene.remove(instance.group);
+    instance.instancedMesh.geometry.dispose();
+    if (Array.isArray(instance.instancedMesh.material)) instance.instancedMesh.material.forEach(m => m.dispose()); else instance.instancedMesh.material.dispose();
+    instance.pulseMesh.geometry.dispose();
+    instance.pulseMaterial.dispose();
+    instance.connectionLines.geometry.dispose();
+    instance.gridHelper.geometry.dispose();
+    instance.gridHelper.material.dispose();
+    instance.hubMesh.geometry.dispose();
+    instance.hubMesh.material.dispose();
+    instance.nodeLookup.clear();
+  },
+  fallback(container) { container.innerHTML = '<div style="color:#ff4444;padding:20px">WebGL 2.0 unsupported — degraded to table render</div>'; }
+};
+
+class SceneManager {
+  constructor({ canvas, width, height, cameraPosition }) {
+    this.canvas = canvas; this.width = width; this.height = height;
+    this.scene = null; this.camera = null; this.renderer = null; this.controls = null;
+    this.clock = new THREE.Clock(); this.elapsed = 0; this.updateCallbacks = [];
+    this.rafId = null; this.disposed = false;
+    this.cameraPosition = cameraPosition || [0, 6, 8];
+    this.fps = 60; this.frameCount = 0; this.fpsTime = 0;
+  }
+  mount() {
+    this.scene = new THREE.Scene();
+    this.scene.fog = new THREE.FogExp2(0x0a0e17, 0.04);
+    this.camera = new THREE.PerspectiveCamera(50, this.width / this.height, 0.1, 100);
+    this.camera.position.set(...this.cameraPosition);
+    this.camera.lookAt(0, 0, 0);
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
+    this.renderer.setSize(this.width, this.height);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.2;
+    this.controls = new OrbitControls(this.camera, this.canvas);
+    this.controls.enableDamping = true; this.controls.dampingFactor = 0.05;
+    this.controls.minDistance = 4; this.controls.maxDistance = 20;
+    this.controls.maxPolarAngle = Math.PI / 2.1;
+    const ambient = new THREE.AmbientLight(0x404060, 0.6); this.scene.add(ambient);
+    const dirLight = new THREE.DirectionalLight(0x88aaff, 0.8); dirLight.position.set(5, 10, 5); this.scene.add(dirLight);
+    const pointLight = new THREE.PointLight(0x00ff88, 0.5, 15); pointLight.position.set(0, 2, 0); this.scene.add(pointLight);
+    window.addEventListener('resize', this.handleResize);
+  }
+  getScene() { return this.scene; }
+  onUpdate(callback) { this.updateCallbacks.push(callback); return () => { this.updateCallbacks = this.updateCallbacks.filter(cb => cb !== callback); }; }
+  start() { this.clock.start(); this.loop(); }
+  loop() {
+    if (this.disposed) return;
+    this.rafId = requestAnimationFrame(() => this.loop());
+    const delta = Math.min(this.clock.getDelta(), 0.1);
+    this.elapsed += delta;
+    this.frameCount++; this.fpsTime += delta;
+    if (this.fpsTime >= 1) { this.fps = Math.round(this.frameCount / this.fpsTime); this.frameCount = 0; this.fpsTime = 0; const fpsEl = document.getElementById('fps'); if (fpsEl) fpsEl.textContent = this.fps; }
+    this.updateCallbacks.forEach(cb => cb(delta, this.elapsed));
+    this.controls.update();
+    this.renderer.render(this.scene, this.camera);
+  }
+  handleResize = () => { this.width = window.innerWidth; this.height = window.innerHeight; this.camera.aspect = this.width / this.height; this.camera.updateProjectionMatrix(); this.renderer.setSize(this.width, this.height); };
+  dispose() { this.disposed = true; if (this.rafId) cancelAnimationFrame(this.rafId); window.removeEventListener('resize', this.handleResize); this.controls.dispose(); this.renderer.dispose(); this.updateCallbacks = []; }
+}
+
+class DashboardBridge {
+  constructor(canvas) {
+    this.sceneManager = new SceneManager({ canvas, width: window.innerWidth, height: window.innerHeight, cameraPosition: [0, 7, 10] });
+    this.topologyInstance = null; this.unbindUpdate = null;
+    this.stats = { vuln: 0, safe: 0, blocked: 0 };
+  }
+  init() {
+    this.sceneManager.mount();
+    const scene = this.sceneManager.getScene();
+    if (!scene) throw new Error('SCENE_INIT_FAILED');
+    this.topologyInstance = VulnTopologySkill.mount(scene, VulnTopologySkill.config);
+    this.unbindUpdate = this.sceneManager.onUpdate((delta, elapsed) => { if (this.topologyInstance) VulnTopologySkill.update(delta, elapsed, this.topologyInstance); });
+    this.sceneManager.start();
+    this.updateHUD();
+  }
+  handleRemoteArtifact(artifact) {
+    if (!this.topologyInstance) return;
+    const result = this.topologyInstance.ingest(artifact);
+    if (result) { this.stats[artifact.verdict.toLowerCase()]++; this.updateHUD(); this.addEventLog(artifact); }
+  }
+  updateHUD() {
+    document.getElementById('node-count').textContent = `${this.topologyInstance ? this.topologyInstance.activeNodeCount() : 0} NODES`;
+    document.getElementById('vuln-count').textContent = `${this.stats.vuln} VULN`;
+    document.getElementById('safe-count').textContent = `${this.stats.safe} SAFE`;
+    document.getElementById('blocked-count').textContent = `${this.stats.blocked} BLOCKED`;
+  }
+  addEventLog(artifact) {
+    const log = document.getElementById('event-log');
+    const item = document.createElement('div');
+    item.className = `event-item ${artifact.verdict.toLowerCase()}`;
+    const similarity = artifact.evidence?.response_similarity?.toFixed(2) ?? '—';
+    item.innerHTML = `<div class="event-method">${artifact.verdict} · conf:${(artifact.confidence * 100).toFixed(0)}%</div><div class="event-endpoint">${artifact.endpoint}</div><div class="event-meta">sim:${similarity} · ${artifact.technical_root_cause?.substring(0, 60) || ''}</div>`;
+    log.insertBefore(item, log.firstChild);
+    while (log.children.length > 30) log.removeChild(log.lastChild);
+  }
+  clear() { if (this.topologyInstance) { this.topologyInstance.clear(); this.stats = { vuln: 0, safe: 0, blocked: 0 }; this.updateHUD(); document.getElementById('event-log').innerHTML = ''; } }
+  destroy() { if (this.unbindUpdate) this.unbindUpdate(); const scene = this.sceneManager.getScene(); if (scene && this.topologyInstance) VulnTopologySkill.dispose(scene, this.topologyInstance); this.sceneManager.dispose(); }
+}
+
+const MOCK_ENDPOINTS = ['GET /api/v1/users/{id}', 'GET /api/v1/orders/{id}', 'GET /api/v1/accounts/{id}', 'POST /api/v1/auth/login', 'GET /api/v1/transactions/{id}', 'GET /api/v1/profile', 'PUT /api/v1/users/{id}/settings', 'DELETE /api/v1/sessions/{id}', 'GET /api/v1/wallet/{id}', 'POST /api/v1/transfer', 'GET /api/v1/documents/{id}', 'PATCH /api/v1/profile', 'GET /api/v1/admin/users', 'POST /api/v1/admin/config', 'GET /api/v1/audit-logs', 'GET /api/v1/payment/orders/{id}', 'POST /api/v1/payment/refund', 'GET /api/v1/notifications', 'PUT /api/v1/password/change', 'GET /api/v1/devices/{id}', 'DELETE /api/v1/devices/{id}', 'GET /api/v1/invitations', 'POST /api/v1/invitations/redeem', 'GET /api/v1/referrals/stats'];
+const MOCK_CAUSES = ['Controller fails to bind principal user_id to repository query.', 'Endpoint extracts account_id from URL without ownership validation.', 'Missing row-level security filter on tenant context.', 'JWT subject not compared against requested resource owner.', 'IDOR via sequential integer enumeration in path parameter.', 'Mass assignment allows privilege escalation via role field.', 'Safe read endpoint — ownership check present and enforced.', 'P0-INVARIANT-03: non-idempotent method blocked by write gate.'];
+function generateArtifact() {
+  const endpoint = MOCK_ENDPOINTS[Math.floor(Math.random() * MOCK_ENDPOINTS.length)];
+  const roll = Math.random();
+  const verdict = roll < 0.35 ? 'VULNERABLE' : roll < 0.75 ? 'SAFE' : 'BLOCKED';
+  return { endpoint, verdict, confidence: verdict === 'VULNERABLE' ? 0.85 + Math.random() * 0.15 : 0.6 + Math.random() * 0.3, evidence: { primary_status: verdict === 'VULNERABLE' ? 200 : verdict === 'SAFE' ? 200 : 0, secondary_status: verdict === 'VULNERABLE' ? 200 : verdict === 'SAFE' ? 403 : 0, response_similarity: verdict === 'VULNERABLE' ? 0.9 + Math.random() * 0.1 : 0.1 + Math.random() * 0.3, elapsed_ms: Math.floor(20 + Math.random() * 180) }, technical_root_cause: MOCK_CAUSES[Math.floor(Math.random() * MOCK_CAUSES.length)] };
+}
+
+let wsSocket = null;
+let wsReconnectTimer = null;
+function connectRealPipeline(wsUrl) {
+  const targetUrl = wsUrl || 'ws://127.0.0.1:8765';
+  stopAutoSim();
+  if (wsSocket) { wsSocket.onclose = null; wsSocket.close(); }
+  wsSocket = new WebSocket(targetUrl);
+  wsSocket.onopen = () => { document.getElementById('pulse-dot').style.display = 'inline-block'; document.getElementById('scan-status').textContent = 'LIVE MCP'; document.getElementById('pipeline-status').textContent = 'CONNECTED'; document.getElementById('btn-live').classList.add('live'); };
+  wsSocket.onmessage = (event) => { try { const artifact = JSON.parse(event.data); bridge.handleRemoteArtifact(artifact); } catch (err) { console.error('[BRIDGE_PAYLOAD_PARSE_ERROR]', err); } };
+  wsSocket.onclose = () => { document.getElementById('scan-status').textContent = 'RECONNECTING'; document.getElementById('pipeline-status').textContent = 'OFFLINE'; document.getElementById('btn-live').classList.remove('live'); wsReconnectTimer = setTimeout(() => connectRealPipeline(targetUrl), 3000); };
+  wsSocket.onerror = () => { wsSocket.close(); };
+}
+function disconnectRealPipeline() {
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  if (wsSocket) { wsSocket.onclose = null; wsSocket.close(); wsSocket = null; }
+  document.getElementById('btn-live').classList.remove('live');
+}
+
+const container = document.getElementById('canvas-container');
+const canvas = document.createElement('canvas');
+container.appendChild(canvas);
+const bridge = new DashboardBridge(canvas);
+bridge.init();
+let autoSim = true;
+let simInterval = null;
+function startAutoSim() {
+  if (simInterval) return;
+  document.getElementById('pulse-dot').style.display = 'inline-block';
+  document.getElementById('scan-status').textContent = 'SCANNING';
+  document.getElementById('pipeline-status').textContent = 'STREAMING';
+  simInterval = setInterval(() => { bridge.handleRemoteArtifact(generateArtifact()); }, 800);
+}
+function stopAutoSim() {
+  if (simInterval) { clearInterval(simInterval); simInterval = null; }
+  document.getElementById('pulse-dot').style.display = 'none';
+  document.getElementById('scan-status').textContent = 'IDLE';
+  document.getElementById('pipeline-status').textContent = 'READY';
+}
+document.getElementById('btn-auto').addEventListener('click', (e) => { autoSim = !autoSim; e.target.classList.toggle('active', autoSim); if (autoSim) { disconnectRealPipeline(); startAutoSim(); } else { stopAutoSim(); } });
+document.getElementById('btn-batch').addEventListener('click', () => { const count = 5 + Math.floor(Math.random() * 8); for (let i = 0; i < count; i++) { setTimeout(() => bridge.handleRemoteArtifact(generateArtifact()), i * 150); } });
+document.getElementById('btn-live').addEventListener('click', () => { if (wsSocket && wsSocket.readyState === WebSocket.OPEN) { disconnectRealPipeline(); startAutoSim(); autoSim = true; document.getElementById('btn-auto').classList.add('active'); } else { connectRealPipeline(); autoSim = false; document.getElementById('btn-auto').classList.remove('active'); } });
+document.getElementById('btn-clear').addEventListener('click', () => { bridge.clear(); });
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('live') === '1') { connectRealPipeline(); } else { startAutoSim(); }
+window.addEventListener('beforeunload', () => { stopAutoSim(); disconnectRealPipeline(); bridge.destroy(); });
+</script>
+</body>
+</html>

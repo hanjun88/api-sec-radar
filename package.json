@@ -1,0 +1,21 @@
+{
+  "name": "vuln-topology-pipeline",
+  "version": "1.0.0",
+  "description": "VulnTopology — 3D Threat Topology Radar with WebSocket Pipeline",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "three": "^0.160.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.160.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0",
+    "jsdom": "^24.0.0"
+  }
+}

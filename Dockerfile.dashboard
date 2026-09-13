@@ -1,0 +1,33 @@
+FROM nginx:1.27-alpine
+
+RUN rm -rf /etc/nginx/conf.d/* /usr/share/nginx/html/*
+
+RUN cat <<'EOF' > /etc/nginx/conf.d/dashboard.conf
+server {
+    listen 3000;
+    server_name localhost;
+
+    root /usr/share/nginx/html;
+    index vuln_topology_dashboard.html;
+
+    add_header X-Content-Type-Options "nosniff";
+    add_header X-Frame-Options "DENY";
+    add_header Access-Control-Allow-Origin "*";
+
+    location / {
+        try_files $uri $uri/ /vuln_topology_dashboard.html;
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg)$ {
+        expires 1d;
+        add_header Cache-Control "public, no-transform";
+    }
+}
+EOF
+
+COPY vuln_topology_dashboard.html /usr/share/nginx/html/vuln_topology_dashboard.html
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=5s --timeout=3s --retries=3 \
+  CMD wget -q --spider http://127.0.0.1:3000/vuln_topology_dashboard.html || exit 1

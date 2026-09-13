@@ -1,0 +1,29 @@
+FROM python:3.11-slim AS base
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN useradd -u 10001 -m -s /bin/bash appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
+COPY --chown=appuser:appuser src/ ./src/
+COPY --chown=appuser:appuser tests/ ./tests/
+COPY --chown=appuser:appuser pytest.ini .
+
+EXPOSE 8765
+
+HEALTHCHECK --interval=5s --timeout=3s --start-period=3s --retries=3 \
+  CMD python3 -c "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8765)); s.close()" || exit 1
+
+CMD ["python3", "src/pipeline/ws_bridge_server.py"]

@@ -1,0 +1,71 @@
+version: '3.8'
+
+networks:
+  sec-radar-net:
+    driver: bridge
+
+services:
+  ws-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: sec-radar/ws-bridge:latest
+    container_name: sec-radar-ws-bridge
+    command: ["python3", "src/pipeline/ws_bridge_server.py"]
+    ports:
+      - "8765:8765"
+    networks:
+      - sec-radar-net
+    restart: unless-stopped
+    stop_signal: SIGTERM
+    stop_grace_period: 5s
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: sec-radar/dashboard:latest
+    container_name: sec-radar-dashboard
+    ports:
+      - "3000:3000"
+    networks:
+      - sec-radar-net
+    restart: unless-stopped
+    depends_on:
+      ws-bridge:
+        condition: service_healthy
+
+  live-feeder:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: sec-radar/live-feeder:latest
+    container_name: sec-radar-live-feeder
+    command: ["python3", "src/pipeline/live_scan_feeder.py"]
+    environment:
+      - WS_SERVER_URL=ws://ws-bridge:8765
+      - SCAN_INTERVAL_SEC=3.0
+      - CONCURRENCY_LIMIT=5
+    networks:
+      - sec-radar-net
+    restart: unless-stopped
+    depends_on:
+      ws-bridge:
+        condition: service_healthy
+
+  test-feeder:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: sec-radar/test-feeder:latest
+    container_name: sec-radar-test-feeder
+    command: ["python3", "src/pipeline/test_stream_feeder.py"]
+    environment:
+      - WS_SERVER_URL=ws://ws-bridge:8765
+    networks:
+      - sec-radar-net
+    profiles:
+      - test
+    depends_on:
+      ws-bridge:
+        condition: service_healthy
