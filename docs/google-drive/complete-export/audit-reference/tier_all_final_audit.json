@@ -1,0 +1,241 @@
+{
+  "books": {
+    "astro_composite": {
+      "bundle_cards": 6,
+      "cap_ok": true,
+      "card_count": 6,
+      "conf_ok": true,
+      "digest_hans": 10054,
+      "line_bad": 0,
+      "line_refs": 12,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "astro_transit": {
+      "bundle_cards": 6,
+      "cap_ok": true,
+      "card_count": 6,
+      "conf_ok": true,
+      "digest_hans": 10028,
+      "line_bad": 0,
+      "line_refs": 10,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_attached": {
+      "bundle_cards": 5,
+      "cap_ok": true,
+      "card_count": 5,
+      "conf_ok": true,
+      "digest_hans": 10184,
+      "line_bad": 0,
+      "line_refs": 8,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_body_keeps_score": {
+      "bundle_cards": 5,
+      "cap_ok": true,
+      "card_count": 5,
+      "conf_ok": true,
+      "digest_hans": 10067,
+      "line_bad": 0,
+      "line_refs": 5,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_boundaries": {
+      "bundle_cards": 6,
+      "cap_ok": true,
+      "card_count": 6,
+      "conf_ok": true,
+      "digest_hans": 11995,
+      "line_bad": 0,
+      "line_refs": 13,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_codependent_no_more": {
+      "bundle_cards": 6,
+      "cap_ok": true,
+      "card_count": 6,
+      "conf_ok": true,
+      "digest_hans": 11905,
+      "line_bad": 0,
+      "line_refs": 6,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_cptsd": {
+      "bundle_cards": 10,
+      "cap_ok": true,
+      "card_count": 10,
+      "conf_ok": true,
+      "digest_hans": 10063,
+      "line_bad": 0,
+      "line_refs": 19,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_feeling_good": {
+      "bundle_cards": 5,
+      "cap_ok": true,
+      "card_count": 5,
+      "conf_ok": true,
+      "digest_hans": 10005,
+      "line_bad": 0,
+      "line_refs": 8,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_hold_me_tight": {
+      "bundle_cards": 5,
+      "cap_ok": true,
+      "card_count": 5,
+      "conf_ok": true,
+      "digest_hans": 10006,
+      "line_bad": 0,
+      "line_refs": 9,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_nvc": {
+      "bundle_cards": 6,
+      "cap_ok": true,
+      "card_count": 6,
+      "conf_ok": true,
+      "digest_hans": 10442,
+      "line_bad": 0,
+      "line_refs": 14,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_seven_principles": {
+      "bundle_cards": 6,
+      "cap_ok": true,
+      "card_count": 6,
+      "conf_ok": true,
+      "digest_hans": 10419,
+      "line_bad": 0,
+      "line_refs": 10,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_waking_tiger": {
+      "bundle_cards": 5,
+      "cap_ok": true,
+      "card_count": 5,
+      "conf_ok": true,
+      "digest_hans": 10000,
+      "line_bad": 0,
+      "line_refs": 6,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "psych_why_does_he_do_that": {
+      "bundle_cards": 5,
+      "cap_ok": true,
+      "card_count": 5,
+      "conf_ok": true,
+      "digest_hans": 10015,
+      "line_bad": 0,
+      "line_refs": 6,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    },
+    "vedic_jyotish_core": {
+      "bundle_cards": 6,
+      "cap_ok": true,
+      "card_count": 6,
+      "conf_ok": true,
+      "digest_hans": 10358,
+      "line_bad": 0,
+      "line_refs": 12,
+      "status": true,
+      "tests_total": 20,
+      "upiv_ok": true
+    }
+  },
+  "generated": "2026-09-11T21:03:20+07:00",
+  "meta_arbiter": {
+    "module": "_AUDIT/meta_arbiter/engine.py",
+    "pydantic": "v2",
+    "skill_registry_levels": {
+      "CRISIS(0)": {
+        "primary": "crisis_hotline_protocol",
+        "related": []
+      },
+      "REPAIR(3)": {
+        "primary": "psych_hold_me_tight",
+        "related": [
+          "psych_attached",
+          "psych_seven_principles",
+          "psych_nvc",
+          "psych_feeling_good"
+        ]
+      },
+      "SAFETY_PLAN(1)": {
+        "primary": "psych_why_does_he",
+        "related": [
+          "psych_boundaries",
+          "psych_codependent_no_more"
+        ]
+      },
+      "STABILIZE(2)": {
+        "primary": "psych_cptsd",
+        "related": [
+          "psych_body_keeps_score",
+          "psych_waking_tiger"
+        ]
+      }
+    },
+    "symbolic_lock": [
+      0.36,
+      0.4
+    ],
+    "version": "meta-arbiter-v2.0"
+  },
+  "multi_modal_router": {
+    "cases": [
+      "case1: cptsd着陆 vs why_does_he隔离 -> 危险因子优先",
+      "case2: attached依恋 vs boundaries边界 -> 安全>边界>依恋",
+      "case3: codependent放弃控制 vs nvc同理 -> 虐待时detachment优先",
+      "case4: seven_principles维护 vs hold_me_tight修复 -> 急性EFT/慢性Gottman",
+      "case5: feeling_good认知重构 vs cptsd稳定 -> 高唤起禁认知",
+      "case6: 象征层并存 -> side_annotation, 不影响主决策"
+    ],
+    "module": "_AUDIT/meta_arbiter/engine.py::MultiModalRouter",
+    "priority": "CRISIS>SAFETY_PLAN>STABILIZE>REPAIR>SYMBOLIC",
+    "version": "multi-modal-router-v1.0"
+  },
+  "pytest": {
+    "exit_code": 0,
+    "files": [
+      "tests/test_tier_p0.py",
+      "tests/test_tier_all.py"
+    ],
+    "result": "140 passed in 2.35s"
+  },
+  "tier": "ALL",
+  "tier_gate": "PASS",
+  "totals": {
+    "all_complete": true,
+    "book_count": 14,
+    "psych_books": 11,
+    "symbolic_books": 3,
+    "total_cards": 82
+  }
+}
