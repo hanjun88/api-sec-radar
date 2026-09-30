@@ -6,8 +6,10 @@ P0-INVARIANT-03: 非只读方法默认零网络流量阻断（fail-closed 白名
 安全方法携带非空 body 且 Content-Type 为表单/JSON 时升级为可疑写绕过。
 
 强化项：
-- ``validate_request_security`` 整合写熔断 + HTTP 方法覆盖 + Content-Type 变体
-  + body 编码探测 + 对抗绕过检测。
+- ``validate_method_safety`` 为 P0-INVARIANT-03 物理门禁判定（白名单 fail-closed 模型）。
+- HTTP 方法覆盖（header/query）解析与 Content-Type 变体/body 编码探测
+  由 ``_detect_actual_method`` / ``_detect_body_encoding`` / ``_canonical_content_type``
+  等内部工具函数承载，供上层按需组合。
 - ``validate_method_safety`` 签名保持向后兼容，行为不变。
 """
 
@@ -141,7 +143,7 @@ def validate_method_safety(
 
     Note:
         本函数签名保持向后兼容。HTTP 方法覆盖（header/query）与对抗绕过
-        检测请使用 :func:`validate_request_security`。
+        检测请由上层用 ``_detect_actual_method`` 等工具函数按需组合。
     """
     norm_method = method.upper().strip()
 
@@ -164,105 +166,3 @@ def validate_method_safety(
             "需在调用参数中显式设置 allow_write=True 方可执行差分重放。",
         )
     return True, None
-
-
-def validate_request_security(
-    url: str,
-    method: str,
-    headers: Optional[Dict[str, str]] = None,
-    body: Optional[str] = None,
-    query_params: Optional[Dict[str, str]] = None,
-    allow_write: bool = False,
-) -> Tuple[bool, Optional[str], list]:
-    """
-    整合写熔断 + 对抗检测的统一请求安全门禁。
-
-    校验顺序（短路返回）：
-    1. URL 合法性（scheme/host/控制字符）。
-    2. HTTP 方法覆盖解析（X-HTTP-Method-Override header / _method query）。
-    3. Content-Type 变体鲁棒判定 + body 编码探测。
-    4. P0-INVARIANT-03 写熔断（基于解析后的有效方法）。
-    5. 对抗绕过检测（BypassDetector 聚合）。
-
-    Args:
-        url: 请求 URL。
-        method: 原始 HTTP 方法。
-        headers: 请求头。
-        body: 请求体。
-        query_params: 解析后的 query 参数。
-        allow_write: 是否显式允许写操作。
-
-    Returns:
-        ``(is_allowed, block_reason, findings)``：
-        ``findings`` 为对抗检测命中项列表（即便放行也可能含 info 级提示）。
-    """
-    headers = headers or {}
-    query_params = query_params or {}
-
-    # 延迟导入避免循环依赖（adversarial_guard 不依赖 safety）
-    from bounty_platform.adversarial_guard import (
-        BypassDetector,
-        validate_headers,
-        validate_url,
-    )
-
-    # 1. URL 合法性
-    url_ok, url_reason = validate_url(url)
-    if not url_ok:
-        return False, f"URL_REJECTED: {url_reason}", []
-
-    # 2. Header 校验
-    header_problems = validate_headers(headers)
-    if header_problems:
-        return False, f"HEADER_REJECTED: {'; '.join(header_problems)}", []
-
-    # 3. 方法覆盖解析
-    effective_method, overridden, override_reason = _detect_actual_method(
-        method, headers, query_params
-    )
-
-    # 4. 方法覆盖升级为写操作：先于通用写熔断判定，使本分支可达。
-    #    即便原始方法是 GET，只要被 header/query 覆盖为非安全写方法且未显式
-    #    allow_write，立即以「方法覆盖」专属原因 fail-closed 阻断。
-    if overridden and effective_method not in SAFE_HTTP_METHODS and not allow_write:
-        return (
-            False,
-            f"P0-INVARIANT-03_VIOLATION: 方法覆盖 {override_reason} 将安全方法 "
-            f"升级为写操作 [{effective_method}]，需显式 allow_write=True",
-            [],
-        )
-
-    # 5. Content-Type 变体 + body 编码探测
-    content_type = ""
-    low_headers = {str(k).lower(): str(v) for k, v in headers.items()}
-    content_type = low_headers.get("content-type", "")
-    body_encoding = _detect_body_encoding(body)
-
-    # 6. 通用写熔断（基于解析后的有效方法）
-    is_allowed, block_reason = validate_method_safety(
-        effective_method,
-        allow_write,
-        body=body,
-        content_type=content_type,
-    )
-
-    if not is_allowed:
-        return False, block_reason, []
-
-    # 7. 对抗绕过检测
-    detector = BypassDetector()
-    findings = detector.check_request(url, method, headers, query_params, body)
-    blocking = [f for f in findings if f["blocked"]]
-    if blocking:
-        reasons = "; ".join(f["reason"] for f in blocking)
-        return False, f"ADVERSARIAL_BLOCK: {reasons}", findings
-
-    # body 编码为 base64/gzip 时附加提示（不阻断，供上层解码重放）
-    if body_encoding in ("base64_json", "gzip"):
-        findings.append({
-            "type": "body_encoding",
-            "blocked": False,
-            "reason": f"BODY_ENCODING: 检测到 {body_encoding} body，重放前需解码",
-        })
-
-    return True, None, findings

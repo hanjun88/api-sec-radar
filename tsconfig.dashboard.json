@@ -1,0 +1,1 @@
+{"compilerOptions":{"lib":["ES2020","DOM","DOM.Iterable"],"module":"ESNext","moduleResolution":"bundler","outDir":"dashboard/vendor","skipLibCheck":true,"strict":true,"target":"ES2020"},"include":["src/webgl/SceneManager.ts"]}

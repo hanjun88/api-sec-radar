@@ -11,7 +11,7 @@ import json
 import os
 import signal
 import sys
-from typing import Any, Dict, Set
+from typing import Any, Dict, Optional, Set
 
 try:
     import websockets
@@ -41,11 +41,14 @@ class BridgeServer:
         self.clients.discard(websocket)
         print(f"[BRIDGE] 客户端断开 (当前: {len(self.clients)}) | remote={websocket.remote_address}")
 
-    async def broadcast(self, message: str) -> None:
+    async def broadcast(self, message: str, sender: Optional[websockets.WebSocketServerProtocol] = None) -> None:
         if not self.clients:
             return
         disconnected = set()
         for client in self.clients:
+            # P2-⑪: 不回发给发送者本身（与 handler 注释一致）。
+            if sender is not None and client is sender:
+                continue
             try:
                 await client.send(message)
                 self.broadcast_count += 1
@@ -71,7 +74,7 @@ class BridgeServer:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     print(f"[BRIDGE] [#{self.received_count}] 非 JSON 消息，原样透传 ({len(message)} bytes)")
                 # 广播至所有其他客户端（不回发给发送者本身）
-                await self.broadcast(message if isinstance(message, str) else message.decode("utf-8"))
+                await self.broadcast(message if isinstance(message, str) else message.decode("utf-8"), sender=websocket)
         except websockets.ConnectionClosed:
             pass
         finally:
