@@ -346,6 +346,24 @@ class LiveScanFeeder:
             print(f"[SCAN] batch_differential_scan 失败: {e}", file=sys.stderr)
             return []
 
+        # [新增补丁] Phase 2.5: 自动触发报告双轨落盘（Markdown + JSON）
+        try:
+            report_res = self.mcp.call_tool(
+                "emit_audit_report",
+                {
+                    "scan_result": scan_result,
+                    "target": TARGET_BASE_URL or "http://127.0.0.1:18099",
+                    "output_dir": "reports",
+                },
+            )
+            if isinstance(report_res, dict) and report_res.get("status") == "DELIVERED":
+                print(f"[SCAN] 审计报告已生成: {report_res.get('markdown_path')}")
+            else:
+                err = report_res.get("error") if isinstance(report_res, dict) else report_res
+                print(f"[SCAN] 报告生成失败: {err}", file=sys.stderr)
+        except Exception as e:
+            print(f"[SCAN] 报告生成失败: {e}", file=sys.stderr)
+
         # Phase 3: 解析扫描结果
         # P0-③: 生产者实际返回键是 "all_results"，不是 "results"。
         results: List[Dict[str, Any]] = []

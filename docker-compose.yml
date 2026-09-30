@@ -5,6 +5,32 @@ networks:
     driver: bridge
 
 services:
+  # [新增补丁] 内置极简 HTTP 靶机：所有方法返回 200 + JSON，
+  # 让 docker compose up 开箱即看到 200/404 态势推流而非满屏 ERROR。
+  # 注意必须用 |（保留换行）而非 >：Python 的 class/def 体不能挤在同一行，否则 SyntaxError。
+  mock-target:
+    image: python:3.11-slim
+    container_name: sec-radar-mock-target
+    command: |
+      python3 -c "
+      import http.server, socketserver
+      socketserver.TCPServer.allow_reuse_address = True
+      class H(http.server.BaseHTTPRequestHandler):
+          def log_message(self, *args): pass
+          def do_GET(self):
+              self.send_response(200)
+              self.send_header('Content-Type', 'application/json')
+              self.end_headers()
+              self.wfile.write(b'{\"status\": \"mocked\"}')
+          do_POST = do_PUT = do_DELETE = do_PATCH = do_GET
+      socketserver.TCPServer(('', 18099), H).serve_forever()
+      "
+    networks:
+      - sec-radar-net
+    ports:
+      - "18099:18099"
+    restart: unless-stopped
+
   ws-bridge:
     build:
       context: .
@@ -54,6 +80,8 @@ services:
       - WS_SERVER_URL=ws://ws-bridge:8765
       - SCAN_INTERVAL_SEC=3.0
       - CONCURRENCY_LIMIT=5
+      # [新增补丁] 容器内经同一 network 访问 mock 靶机，开箱即有 200 响应可扫。
+      - TARGET_BASE_URL=http://mock-target:18099
     networks:
       - sec-radar-net
     restart: unless-stopped
@@ -63,6 +91,8 @@ services:
     depends_on:
       ws-bridge:
         condition: service_healthy
+      mock-target:
+        condition: service_started
 
   test-feeder:
     build:
