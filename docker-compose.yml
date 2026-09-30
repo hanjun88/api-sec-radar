@@ -19,6 +19,14 @@ services:
     restart: unless-stopped
     stop_signal: SIGTERM
     stop_grace_period: 5s
+    # P2-⑨: healthcheck 只属于 ws-bridge（监听 8765 的服务），
+    # 不能写在共用镜像层（Dockerfile.pipeline），否则 feeder 容器被误标 unhealthy。
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8765)); s.close()"]
+      interval: 5s
+      timeout: 3s
+      start_period: 3s
+      retries: 3
 
   dashboard:
     build:
@@ -49,6 +57,9 @@ services:
     networks:
       - sec-radar-net
     restart: unless-stopped
+    # P2-⑨: feeder 不监听端口，显式禁用 healthcheck（防御镜像层残留）。
+    healthcheck:
+      test: ["NONE"]
     depends_on:
       ws-bridge:
         condition: service_healthy
@@ -66,6 +77,9 @@ services:
       - sec-radar-net
     profiles:
       - test
+    # P2-⑨: feeder 不监听端口，显式禁用 healthcheck（防御镜像层残留）。
+    healthcheck:
+      test: ["NONE"]
     depends_on:
       ws-bridge:
         condition: service_healthy

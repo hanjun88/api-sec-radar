@@ -160,7 +160,7 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
                     update = json.loads(body.decode("utf-8") or "{}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     update = {}
-                self._MOCK_ACCOUNTS[acc_id].update(
+                _MOCK_ACCOUNTS[acc_id].update(
                     {k: v for k, v in update.items() if k in ("balance", "owner")}
                 )
                 self._json(200, {"updated": True, "account": _MOCK_ACCOUNTS[acc_id]})
@@ -420,24 +420,6 @@ def auditor_mcp_client(mock_target_server: str):
     pytest.importorskip("mcp")
     import sys as _sys
     client = MCPTestClient([_sys.executable, "-m", "src.auditor.auditor_mcp_server"])
-    try:
-        client.call("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "1.0"},
-        })
-        client.notify("notifications/initialized")
-        yield client
-    finally:
-        client.close()
-
-
-@pytest.fixture(scope="module")
-def bounty_mcp_client():
-    """启动 bounty_platform MCP 子进程并完成 initialize 握手。"""
-    pytest.importorskip("mcp")
-    import sys as _sys
-    client = MCPTestClient([_sys.executable, "-m", "bounty_platform.server"])
     try:
         client.call("initialize", {
             "protocolVersion": "2024-11-05",

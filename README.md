@@ -57,6 +57,20 @@ python3 src/pipeline/live_scan_feeder.py
 python3 src/pipeline/test_stream_feeder.py
 ```
 
+### 实时扫描环境变量（live_scan_feeder.py）
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `OPENAPI_SPEC_PATH` | （内置演示规范） | OpenAPI 3.0 规范 JSON 文件路径 |
+| `TARGET_BASE_URL` | `http://127.0.0.1:18099` | 覆盖规范中 `servers[0].url` 的真实目标基址 |
+| `PRIMARY_TOKEN` / `SECONDARY_TOKEN` | `token-alice` / `token-bob` | 差分双身份凭证（原始 token，不带 `Bearer ` 前缀） |
+| `WS_SERVER_URL` | `ws://127.0.0.1:8765` | WebSocket 广播网关地址 |
+| `SCAN_INTERVAL_SEC` | `5.0` | 扫描轮次间隔（秒） |
+| `CONCURRENCY_LIMIT` | `2` | batch 扫描并发度 |
+
+未设置 `OPENAPI_SPEC_PATH` / `TARGET_BASE_URL` 时，启动会打 WARNING 警告：
+当前扫描的是默认假目标，仅供演示。
+
 ## 测试
 
 ```bash
@@ -80,5 +94,11 @@ pytest tests/ -v
 
 - **P0-INVARIANT-03**: 非幂等写操作（POST/PUT/PATCH/DELETE）默认物理熔断
 - **动态签名 Hook**: 自动重算 X-Timestamp / X-Nonce / HMAC-SHA256 签名
-- **补丁反向验证**: 沙盒环境验证修复后 Context A 维持 200，Context B 返回 404
+- **补丁静态验证**（诚实声明）: `sandbox_verifier.py` 仅做纯静态检查——语法编译
+  + AST 级行级断言（tenant_filter 绑定 + 404 实体屏蔽），不发起任何真实网络请求，
+  因此 `verified_safe` 恒为 `False`、`primary/secondary_status_post_fix` 恒为 0。
+  静态通过记为 `remediation_status=STATIC_AST_PASSED`，**不等于**物理安全。
+- **后续 feature（物理重放验证）**: 在隔离环境对真实目标执行差分测试，
+  验证修复后 Context A 维持 200 / Context B 返回 404 实体屏蔽，
+  物理验证通过后方可标记 `verified_safe=True`、宣告自愈闭环。
 - **显存零泄漏**: 11 级递归 GPU 资源销毁链

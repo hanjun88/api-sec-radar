@@ -7,7 +7,9 @@ Live Scan Feeder (CI/CD Automated Execution Spec v7.0-STRICT)
 """
 
 import asyncio
+import copy
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -21,10 +23,28 @@ except ImportError:
     print("[ERROR] 缺失 websockets 依赖，请执行: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
+logger = logging.getLogger("live-scan-feeder")
+
 WS_BRIDGE_URL = os.environ.get("WS_SERVER_URL", "ws://127.0.0.1:8765")
 AUDITOR_MODULE = os.environ.get("AUDITOR_MODULE", "src.auditor.auditor_mcp_server")
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# P0-①: __file__ 位于 src/pipeline/，三级 dirname 才是仓库根；
+# 子进程以仓库根为 cwd 才能 import src.auditor 包。
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 SCAN_INTERVAL_SEC = float(os.environ.get("SCAN_INTERVAL_SEC", "5.0"))
+
+# P2-⑩: 并发度从环境变量读取，默认 2。
+CONCURRENCY_LIMIT = int(os.environ.get("CONCURRENCY_LIMIT", "2"))
+
+# P1-⑥: 环境变量入口覆盖硬编码默认值。
+_DEFAULT_TARGET_BASE_URL = "http://127.0.0.1:18099"
+_DEFAULT_PRIMARY_TOKEN = "token-alice"
+_DEFAULT_SECONDARY_TOKEN = "token-bob"
+OPENAPI_SPEC_PATH = os.environ.get("OPENAPI_SPEC_PATH", "")
+TARGET_BASE_URL = os.environ.get("TARGET_BASE_URL", "")
+PRIMARY_TOKEN = os.environ.get("PRIMARY_TOKEN", _DEFAULT_PRIMARY_TOKEN)
+SECONDARY_TOKEN = os.environ.get("SECONDARY_TOKEN", _DEFAULT_SECONDARY_TOKEN)
+# 未指定任何目标相关环境变量时，即落在默认假目标上，必须在启动时警告。
+USING_DEFAULT_TARGET = not OPENAPI_SPEC_PATH and not TARGET_BASE_URL
 
 DEFAULT_OPENAPI_SPEC = {
     "openapi": "3.0.0",
@@ -60,6 +80,25 @@ DEFAULT_OPENAPI_SPEC = {
         },
     },
 }
+
+
+def _load_openapi_spec() -> Dict[str, Any]:
+    """P1-⑥: 构造生效的扫描目标规范。
+
+    - OPENAPI_SPEC_PATH 指向 JSON 规范文件时，从文件加载；
+    - 否则使用内置 DEFAULT_OPENAPI_SPEC 的深拷贝；
+    - TARGET_BASE_URL 非空时覆盖 servers[0].url。
+    """
+    if OPENAPI_SPEC_PATH:
+        with open(OPENAPI_SPEC_PATH, "r", encoding="utf-8") as f:
+            spec = json.load(f)
+        if not isinstance(spec, dict):
+            raise ValueError(f"OPENAPI_SPEC_PATH 文件内容不是 JSON 对象: {OPENAPI_SPEC_PATH}")
+    else:
+        spec = copy.deepcopy(DEFAULT_OPENAPI_SPEC)
+    if TARGET_BASE_URL and isinstance(spec.get("servers"), list) and spec["servers"]:
+        spec["servers"][0]["url"] = TARGET_BASE_URL
+    return spec
 
 
 class MCPClient:
@@ -163,6 +202,10 @@ def normalize_verdict(raw: str) -> str:
     upper = raw.upper()
     if "VULN" in upper or "BOLA" in upper or "BROKEN" in upper:
         return "VULNERABLE"
+    # P1-⑤: 提权 / 软越权嫌疑是高价值信号，必须保留为 VULNERABLE，
+    # 不得降级为 INCONCLUSIVE（大屏否则丢失提权信号）。
+    if "PRIV_ESCALATION" in upper or "PRIVILEGE_ESCALATION" in upper or "SUSPECT" in upper:
+        return "VULNERABLE"
     if "BLOCK" in upper or "SAFE_GUARD" in upper or "INVARIANT" in upper:
         return "BLOCKED"
     if "SAFE" in upper or "SECURE" in upper or "OK" in upper:
@@ -210,18 +253,27 @@ class LiveScanFeeder:
         ws_url: str = WS_BRIDGE_URL,
         openapi_spec: Optional[Dict[str, Any]] = None,
         scan_interval_sec: float = SCAN_INTERVAL_SEC,
-        primary_token: str = "Bearer token-alice",
-        secondary_token: str = "Bearer token-bob",
+        primary_token: str = PRIMARY_TOKEN,
+        secondary_token: str = SECONDARY_TOKEN,
     ):
         self.ws_url = ws_url
-        self.openapi_spec = openapi_spec or DEFAULT_OPENAPI_SPEC
+        self.openapi_spec = openapi_spec or _load_openapi_spec()
         self.scan_interval_sec = scan_interval_sec
-        self.primary_token = primary_token
-        self.secondary_token = secondary_token
+        # P0-④: 透传给 batch_differential_scan 的 token 必须是原始值
+        # （hook 链会自行拼接 "Bearer " 前缀），剥离用户可能附带的 Bearer 前缀。
+        self.primary_token = self._strip_bearer_prefix(primary_token)
+        self.secondary_token = self._strip_bearer_prefix(secondary_token)
         self.running = True
         self.scan_count = 0
         self.artifact_count = 0
         self.mcp: Optional[MCPClient] = None
+
+    @staticmethod
+    def _strip_bearer_prefix(token: str) -> str:
+        t = token.strip()
+        if t.lower().startswith("bearer "):
+            return t[len("bearer "):]
+        return t
 
     def stop(self) -> None:
         self.running = False
@@ -249,12 +301,18 @@ class LiveScanFeeder:
         print(f"\n[SCAN] === 第 {self.scan_count} 轮真实差分扫描 ===")
 
         # Phase 1: 白盒契约摄入
+        # P0-②: 工具签名要求 *_headers_json: str（JSON 字符串），不是 dict。
         try:
             ingest_result = self.mcp.call_tool(
                 "ingest_openapi",
                 {
                     "spec_content_or_path": json.dumps(self.openapi_spec),
-                    "secondary_headers": {"Authorization": self.secondary_token},
+                    "secondary_headers_json": json.dumps(
+                        {"Authorization": f"Bearer {self.secondary_token}"}
+                    ),
+                    "primary_headers_json": json.dumps(
+                        {"Authorization": f"Bearer {self.primary_token}"}
+                    ),
                 },
             )
             target_matrix = ingest_result if isinstance(ingest_result, list) else ingest_result.get(
@@ -270,14 +328,18 @@ class LiveScanFeeder:
             return []
 
         # Phase 2: 批量差分扫描
+        # P2-⑩: max_concurrency 从环境变量 CONCURRENCY_LIMIT 读取（默认 2）；
+        # P0-④: 透传 primary/secondary token，工具支持动态签名。
         try:
             scan_result = self.mcp.call_tool(
                 "batch_differential_scan",
                 {
                     "target_matrix": target_matrix,
-                    "max_concurrency": 2,
+                    "max_concurrency": CONCURRENCY_LIMIT,
                     "interval_ms": 100,
                     "allow_write": False,
+                    "primary_token": self.primary_token,
+                    "secondary_token": self.secondary_token,
                 },
             )
         except Exception as e:
@@ -285,12 +347,14 @@ class LiveScanFeeder:
             return []
 
         # Phase 3: 解析扫描结果
+        # P0-③: 生产者实际返回键是 "all_results"，不是 "results"。
         results: List[Dict[str, Any]] = []
         if isinstance(scan_result, list):
             results = scan_result
         elif isinstance(scan_result, dict):
             results = (
-                scan_result.get("results")
+                scan_result.get("all_results")
+                or scan_result.get("results")
                 or scan_result.get("scan_results")
                 or scan_result.get("vulnerabilities")
                 or []
@@ -316,6 +380,14 @@ class LiveScanFeeder:
     async def run(self) -> None:
         print(f"[LIVE] 启动真实扫描推流器 → {self.ws_url}")
         print(f"[LIVE] 审计模块: {AUDITOR_MODULE} | 扫描间隔: {self.scan_interval_sec}s")
+        # P1-⑥: 使用默认值（假目标/测试凭证）时必须打醒目警告。
+        if USING_DEFAULT_TARGET:
+            logger.warning(
+                "⚠ 当前使用默认假目标 http://127.0.0.1:18099 与默认测试凭证 "
+                "(PRIMARY_TOKEN/SECONDARY_TOKEN 未设置)，扫描结果仅供演示；"
+                "指向真实目标请设置 OPENAPI_SPEC_PATH / TARGET_BASE_URL / "
+                "PRIMARY_TOKEN / SECONDARY_TOKEN 环境变量。"
+            )
 
         # 启动 MCP 审计引擎
         self.mcp = MCPClient()
@@ -341,9 +413,9 @@ class LiveScanFeeder:
 
 
 async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
     feeder = LiveScanFeeder(
         ws_url=WS_BRIDGE_URL,
-        openapi_spec=DEFAULT_OPENAPI_SPEC,
         scan_interval_sec=5.0,
     )
     loop = asyncio.get_running_loop()

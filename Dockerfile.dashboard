@@ -28,6 +28,9 @@ server {
 EOF
 
 COPY vuln_topology_dashboard.html /usr/share/nginx/html/vuln_topology_dashboard.html
+# dashboard/vendor 含已提交的编译产物 (SceneManager.js) 与本地 three.module.js，
+# 镜像构建时直接 COPY，不依赖 npm 构建
+COPY dashboard/vendor /usr/share/nginx/html/dashboard/vendor
 
 EXPOSE 3000
 
