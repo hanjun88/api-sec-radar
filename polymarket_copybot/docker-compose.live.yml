@@ -1,0 +1,21 @@
+# Phase 2：真实下单。仅在 Phase 1 验收通过、你自己决定后使用：
+#   docker compose -f docker-compose.yml -f docker-compose.live.yml up -d --build
+#
+# 与 DRY_RUN 的区别：
+#   1. 镜像里安装 py-clob-client（WITH_LIVE=1）
+#   2. 不用 env_file —— 那会让私钥出现在 `docker inspect`；改为只读挂载 .env，由程序自己读取
+#      （程序会拒绝权限宽于 0600 的 .env）。宿主机上需要：
+#          sudo chown 10001:10001 .env && chmod 600 .env
+services:
+  copybot:
+    build:
+      args:
+        WITH_LIVE: "1"
+    image: polymarket-copybot:live
+    container_name: polymarket-copybot-live
+    env_file: !reset []
+    environment:
+      DB_PATH: /data/copybot.db
+      LOG_DIR: /logs
+    volumes:
+      - ./.env:/app/.env:ro

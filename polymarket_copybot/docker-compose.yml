@@ -1,0 +1,32 @@
+# Phase 1：DRY_RUN 模拟盘。  启动：  docker compose up -d --build
+# 复盘报表：  docker compose exec copybot python -m copybot report
+# 解除熔断：  docker compose exec copybot python -m copybot reset-halt
+services:
+  copybot:
+    build:
+      context: .
+      args:
+        WITH_LIVE: "0"
+    image: polymarket-copybot:dry-run
+    container_name: polymarket-copybot
+    env_file: .env            # DRY_RUN 的 .env 里没有私钥（即便写了也会被忽略）
+    environment:
+      DB_PATH: /data/copybot.db
+      LOG_DIR: /logs
+    volumes:
+      - copybot-data:/data
+      - copybot-logs:/logs
+    restart: unless-stopped   # 崩溃自动重启；熔断状态存在数据库里，重启不会绕过
+    stop_signal: SIGTERM
+    stop_grace_period: 15s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  copybot-data:
+  copybot-logs:

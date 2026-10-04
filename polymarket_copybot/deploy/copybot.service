@@ -1,0 +1,20 @@
+# 开机自启 + 由 Docker 负责崩溃重启。安装：
+#   sudo cp deploy/copybot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now copybot
+# 按实际部署目录修改 WorkingDirectory；Phase 2 把 ExecStart 换成带 -f docker-compose.live.yml 的版本。
+[Unit]
+Description=Polymarket copy-trading bot (docker compose)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/polymarket_copybot
+ExecStart=/usr/bin/docker compose up -d --build
+ExecStop=/usr/bin/docker compose down
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

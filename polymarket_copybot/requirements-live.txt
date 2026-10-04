@@ -1,0 +1,3 @@
+# Phase 2（MODE=LIVE）才需要：官方 CLOB 客户端，负责签名与下单
+-r requirements.txt
+py-clob-client>=0.34,<0.35

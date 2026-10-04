@@ -1,0 +1,4 @@
+# 核心依赖（DRY_RUN 只需要这些；镜像里不含 py-clob-client，从物理上杜绝真实下单）
+httpx>=0.27,<1
+python-dotenv>=1.0
+web3>=7,<9

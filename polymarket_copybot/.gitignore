@@ -1,0 +1,11 @@
+# 运行时产物与机密：绝不入库
+.env
+.env.*
+!.env.example
+data/
+logs/
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+.pytest_cache/
