@@ -50,7 +50,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install ruff==0.16.10
+          pip install ruff==0.17.0
 
       - name: Ruff Lint Gate
         run: ruff check src tests
