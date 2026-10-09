@@ -41,36 +41,66 @@ class BridgeServer:
         print(f"[BRIDGE] 客户端断开 (当前: {len(self.clients)}) | remote={websocket.remote_address}")
 
     async def broadcast(self, message: str) -> None:
+        """广播消息至所有客户端。
+
+        快照迭代：await send() 期间其他协程可能修改
+        self.clients（register/unregister），直接迭代
+        会触发 RuntimeError: Set changed size during iteration。
+        并发扇出：单客户端失败不影响其余客户端。
+        """
         if not self.clients:
             return
-        disconnected = set()
-        for client in self.clients:
-            try:
-                await client.send(message)
-                self.broadcast_count += 1
-            except (websockets.ConnectionClosed, Exception):
+        snapshot = list(self.clients)
+        disconnected: set[websockets.WebSocketServerProtocol] = set()
+        results = await asyncio.gather(
+            *(self._send_one(client, message, disconnected) for client in snapshot),
+            return_exceptions=True,
+        )
+        for client, outcome in zip(snapshot, results, strict=False):
+            if isinstance(outcome, Exception):
                 disconnected.add(client)
+            else:
+                self.broadcast_count += 1
         for dc in disconnected:
             await self.unregister(dc)
+
+    async def _send_one(
+        self,
+        client: websockets.WebSocketServerProtocol,
+        message: str,
+        disconnected: set[websockets.WebSocketServerProtocol],
+    ) -> None:
+        """向单个客户端发送消息，失败时记录断连。"""
+        try:
+            await client.send(message)
+        except websockets.ConnectionClosed:
+            disconnected.add(client)
+        except Exception as e:
+            print(f"[BRIDGE] 广播失败 remote={client.remote_address}: {e}",
+                  file=sys.stderr)
+            disconnected.add(client)
 
     async def handler(self, websocket: websockets.WebSocketServerProtocol) -> None:
         await self.register(websocket)
         try:
             async for message in websocket:
                 self.received_count += 1
-                # 解析并校验工件结构
+                # 解析并校验工件结构（标量 / null / 非 JSON 均不崩溃）
+                raw = message if isinstance(message, str) else message.decode("utf-8")
                 try:
-                    artifact = json.loads(message) if isinstance(message, str) else json.loads(message.decode("utf-8"))
-                    if "endpoint" in artifact and "verdict" in artifact:
-                        verdict = artifact.get("verdict", "UNKNOWN")
-                        endpoint = artifact.get("endpoint", "?")
-                        print(f"[BRIDGE] [#{self.received_count}] {verdict:12s} | {endpoint}")
-                    else:
-                        print(f"[BRIDGE] [#{self.received_count}] 非标准工件 (keys: {list(artifact.keys())})")
+                    artifact = json.loads(raw)
                 except (json.JSONDecodeError, UnicodeDecodeError):
-                    print(f"[BRIDGE] [#{self.received_count}] 非 JSON 消息，原样透传 ({len(message)} bytes)")
+                    artifact = None
+                if isinstance(artifact, dict) and "endpoint" in artifact and "verdict" in artifact:
+                    verdict = artifact.get("verdict", "UNKNOWN")
+                    endpoint = artifact.get("endpoint", "?")
+                    print(f"[BRIDGE] [#{self.received_count}] {verdict:12s} | {endpoint}")
+                elif artifact is None:
+                    print(f"[BRIDGE] [#{self.received_count}] 非 JSON 消息，原样透传 ({len(raw)} bytes)")
+                else:
+                    print(f"[BRIDGE] [#{self.received_count}] 非标准工件 (type: {type(artifact).__name__})")
                 # 广播至所有其他客户端（不回发给发送者本身）
-                await self.broadcast(message if isinstance(message, str) else message.decode("utf-8"))
+                await self.broadcast(raw)
         except websockets.ConnectionClosed:
             pass
         finally:

@@ -308,7 +308,7 @@ def run_full_pipeline(
     全链路自动化审计流水线：摄入 → 范围过滤 → 差分扫描 → PoC → 赏金 → 报告 → 推流。
 
     - openapi_spec / har_content 至少提供一个（JSON 字符串或文件路径）
-    - scope_* 为逗号分隔的授权范围约束（host 子串 / 路径正则）
+    - scope_* 为逗号分隔的授权范围约束（host 精确/子域匹配 / 路径正则）
     - 非幂等写操作受 P0-INVARIANT-03 熔断保护（allow_write 默认 False）
     - ws_bridge_url 非空时，漏洞工件 best-effort 推送至 WebSocket 广播网关
     """
@@ -365,12 +365,16 @@ def verify_remediation(
 ) -> dict[str, Any]:
     """
     对生成的修复补丁执行沙盒语法编译与行级安全语义断言。
-    只有通过验证（verified_safe=True），整个越权审计与自愈流程才算闭环。
+
+    注意：本工具只做静态验证（AST 编译 + 行级语义特征），
+    不做运行时复测。verified_safe 仅表示补丁源码包含
+    租户绑定与 404 实体屏蔽特征，不保证运行时行为。
+    物理状态码（primary_status_post_fix /
+    secondary_status_post_fix）为静态推断值，非实测。
 
     验证流程：
     1. 静态编译检查（SyntaxError → COMPILE_ERROR）
     2. 行级安全语义断言（必须包含 tenant_id/owner_id/current_user/user_id + 404/NOT_FOUND）
-    3. 物理断言模拟（Context A 维持 200，Context B 返回 404 实体屏蔽）
     """
     result = verify_python_patch(
         test_url=test_url,
