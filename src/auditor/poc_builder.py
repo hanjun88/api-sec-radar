@@ -13,8 +13,10 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-# 纳入 PoC 生成的判定（高风险判定）
-POC_VERDICTS = {"VULNERABLE", "PRIV_ESCALATION", "SUSPECT"}
+from .batch_scan import RICH_EVIDENCE_VERDICTS
+
+# 纳入 PoC 生成的判定（高风险判定）——单一事实来源在 batch_scan
+POC_VERDICTS = set(RICH_EVIDENCE_VERDICTS)
 
 # Severity 固定顺序（报告展示与统计用）
 SEVERITY_ORDER = ["critical", "high", "medium", "low", "informational"]

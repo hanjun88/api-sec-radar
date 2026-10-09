@@ -24,6 +24,10 @@ from .adversarial_guard import validate_request_security
 from .core import ApiAccessAuditor, DifferentialTestInput, RequestIdentity
 from .hook import build_hook_chain
 
+# 富证据 verdict：这些判定的完整证据链必须保留（PoC 生成依赖），
+# 批量压缩时不得精简。LIKELY_SAFE 语义偏安全，不含越权证据。
+RICH_EVIDENCE_VERDICTS = {"VULNERABLE", "PRIV_ESCALATION", "SUSPECT"}
+
 
 def execute_single_entry(
     entry: dict[str, Any],
@@ -161,14 +165,18 @@ def execute_single_entry(
 
 
 def compress_batch_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """批量结果压缩：结果 > 100 条时，非 VULNERABLE 条目的 evidence 精简为
+    """批量结果压缩：结果 > 100 条时，非富证据条目的 evidence 精简为
     只保留 verdict 与关键状态码，控制返回负载与内存。
+
+    富证据 verdict（VULNERABLE / PRIV_ESCALATION / SUSPECT）保留完整
+    证据链：poc_builder.POC_VERDICTS 依赖这些证据生成 PoC 报告，
+    压缩会导致 PoC 缺失根因与相似度。
     """
     if len(results) <= 100:
         return results
     compressed: list[dict[str, Any]] = []
     for r in results:
-        if r.get("verdict") == "VULNERABLE":
+        if r.get("verdict") in RICH_EVIDENCE_VERDICTS:
             compressed.append(r)
             continue
         slim = dict(r)

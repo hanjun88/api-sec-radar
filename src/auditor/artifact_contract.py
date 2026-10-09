@@ -46,8 +46,15 @@ def _evidence_block(
         "secondary_status": int(
             evidence.get("secondary_status", fallback.get("secondary_status", 0)) or 0
         ),
+        # 生产者（core.execute / batch_scan）发 "similarity"；
+        # 兼容旧布局的 "response_similarity"，优先读前者，
+        # 否则 dashboard 相似度恒为 0.0
         "response_similarity": float(
-            evidence.get("response_similarity", fallback.get("response_similarity", 0.0)) or 0.0
+            evidence.get("similarity",
+                         evidence.get("response_similarity",
+                                      fallback.get("similarity",
+                                                   fallback.get("response_similarity", 0.0)))
+                         ) or 0.0
         ),
         "elapsed_ms": int(evidence.get("elapsed_ms", fallback.get("elapsed_ms", 0)) or 0),
         "timestamp": int(time.time() * 1000),

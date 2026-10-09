@@ -75,6 +75,27 @@ class TestBuildArtifact:
         artifact = build_artifact_from_scan_result(dict(_SCAN_ITEM, evidence=None))
         assert artifact["evidence"]["primary_status"] == 200
 
+    def test_similarity_key_from_producer(self):
+        """生产者发 'similarity'，dashboard 读 'response_similarity'。
+
+        修复前 _evidence_block 只读 response_similarity，
+        导致相似度恒为 0.0（审查缺陷 B）。
+        """
+        item = dict(_SCAN_ITEM, evidence={
+            "primary_status": 200, "secondary_status": 200,
+            "similarity": 0.98,
+        })
+        artifact = build_artifact_from_scan_result(item)
+        assert artifact["evidence"]["response_similarity"] == 0.98
+
+    def test_similarity_legacy_key_still_supported(self):
+        item = dict(_SCAN_ITEM, evidence={
+            "primary_status": 200, "secondary_status": 200,
+            "response_similarity": 0.87,
+        })
+        artifact = build_artifact_from_scan_result(item)
+        assert artifact["evidence"]["response_similarity"] == 0.87
+
     def test_root_cause_passthrough(self):
         artifact = build_artifact_from_scan_result(
             dict(_SCAN_ITEM, technical_root_cause="BOLA")
