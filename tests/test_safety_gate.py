@@ -1,8 +1,6 @@
 """tests/test_safety_gate.py — 写熔断门禁组 (B)"""
 from __future__ import annotations
 
-import pytest
-
 from src.auditor.adversarial_guard import validate_request_security
 from src.auditor.core import (
     ApiAccessAuditor,
