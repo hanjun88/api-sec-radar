@@ -143,22 +143,35 @@ def _ingest_sources(
 
 
 def _identity_headers(token: str) -> dict[str, str] | None:
-    """token → 身份请求头；空 token 返回 None（沿用矩阵默认）。"""
+    """token → 身份请求头；空 token 返回 None（沿用矩阵默认）。
+
+    保留 token 的原始 scheme：``Bearer x`` / ``Basic dXNlcjpwYXNz``
+    / ``Token abc`` 均按原样透传，避免破坏非 Bearer 认证。
+    """
     token = (token or "").strip()
     if not token:
         return None
-    return {"Authorization": f"Bearer {_raw_token(token)}"}
+    low = token.lower()
+    if low.startswith(("bearer ", "basic ", "token ")):
+        return {"Authorization": token}
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _raw_token(token: str) -> str:
     """
-    剥离 token 的 scheme 前缀，得到裸 token。
+    剥离 token 的 scheme 前缀，得到裸 token（供 bearer hook 使用）。
 
     ``build_hook_chain`` 的 ``apply_bearer_token`` 会自动补 ``Bearer `` 前缀，
     因此下发给批量扫描引擎的 token 必须是裸值，避免 ``Bearer Bearer x`` 双前缀。
+
+    注意：``basic`` scheme 后跟的是 Base64 编码凭证，不参与 bearer
+    hook（headers 已由 ``_identity_headers`` 原样透传），返回空串
+    避免 ``Bearer dXNlcjpwYXNz`` 破坏 Basic 认证。
     """
     token = (token or "").strip()
-    for scheme in ("bearer ", "basic ", "token "):
+    if token.lower().startswith("basic "):
+        return ""
+    for scheme in ("bearer ", "token "):
         if token.lower().startswith(scheme):
             return token[len(scheme):].strip()
     return token

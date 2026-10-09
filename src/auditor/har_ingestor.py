@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 from pydantic import BaseModel
 
@@ -85,12 +85,6 @@ def _path_template(url: str) -> str:
     return parsed.path or "/"
 
 
-def _strip_query(url: str) -> str:
-    """移除 query string，保留 scheme/host/path。"""
-    parsed = urlparse(url)
-    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
-
-
 def parse_har(
     content_or_path: str,
     primary_headers: dict[str, str] | None = None,
@@ -155,7 +149,9 @@ def parse_har(
 
         target_matrix.append(HarTargetEntry(
             method=method,
-            url=_strip_query(url),
+            # 保留 query：is_auditable 依赖 query 中的对象引用
+            # （?account_id=7），剥离会导致该审计面在扫描时丢失
+            url=url,
             path_template=path,
             primary_headers=p_headers,
             secondary_headers=s_headers,

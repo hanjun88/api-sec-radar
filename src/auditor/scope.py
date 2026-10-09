@@ -20,8 +20,10 @@ class ScopePolicy:
     范围策略。
 
     Args:
-        include_hosts: 允许的 host 列表（子串匹配，大小写不敏感）；
-            None / 空列表表示不限制 host。
+        include_hosts: 允许的 host 列表（精确匹配或子域匹配，
+            大小写不敏感）；None / 空列表表示不限制 host。
+            例如 ``target.local`` 匹配 ``target.local`` 与
+            ``api.target.local``，但不匹配 ``eviltarget.local``。
         include_path_patterns: 路径必须命中的正则列表（非空时启用，任一命中即入界）。
         exclude_path_patterns: 路径命中即出界的正则列表（优先级高于 include）。
     """
@@ -32,6 +34,19 @@ class ScopePolicy:
     def __post_init__(self) -> None:
         self._include_res = [re.compile(p, re.IGNORECASE) for p in self.include_path_patterns]
         self._exclude_res = [re.compile(p, re.IGNORECASE) for p in self.exclude_path_patterns]
+        self._include_hosts = [
+            h.lower().rstrip(".") for h in (self.include_hosts or [])
+        ]
+
+    def _host_allowed(self, host: str) -> bool:
+        """host 白名单裁决：精确匹配或子域匹配（防子串绕过）。"""
+        if not self._include_hosts:
+            return True
+        host = host.rstrip(".")
+        return any(
+            host == allowed or host.endswith("." + allowed)
+            for allowed in self._include_hosts
+        )
 
     def is_in_scope(self, url: str) -> bool:
         """裁决单个 URL 是否在授权范围内。"""
@@ -45,9 +60,7 @@ class ScopePolicy:
             return False
         path = parsed.path or "/"
 
-        if self.include_hosts and not any(
-            h.lower() in host for h in self.include_hosts
-        ):
+        if self.include_hosts and not self._host_allowed(host):
             return False
         if any(pattern.search(path) for pattern in self._exclude_res):
             return False

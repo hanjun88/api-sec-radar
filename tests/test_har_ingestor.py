@@ -74,10 +74,20 @@ class TestParseHar:
         by_path = {m["path_template"]: m for m in matrix}
         assert by_path["/api/v1/accounts"]["json_body"] == '{"owner": "x"}'
 
-    def test_query_stripped_from_url(self):
+    def test_query_preserved_in_url(self):
+        """query 保留：is_auditable 依赖 query 中的对象引用。
+
+        修复前 _strip_query 剥离 query，导致 ?account_id=7
+        审计面在扫描时丢失。
+        """
         matrix = parse_har(HAR)
         by_path = {m["path_template"]: m for m in matrix}
-        assert "?" not in by_path["/api/v1/orders/ORD-9"]["url"]
+        assert by_path["/api/v1/orders/ORD-9"]["url"] == (
+            "http://target.local/api/v1/orders/ORD-9?account_id=7"
+        )
+        assert by_path["/api/v1/users/42"]["url"] == (
+            "http://target.local/api/v1/users/42?verbose=1"
+        )
 
     def test_max_entries_cap(self):
         big = _har([_entry("GET", f"http://t.local/api/x/{i}") for i in range(50)])
