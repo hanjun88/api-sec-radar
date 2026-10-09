@@ -1,7 +1,8 @@
 """tests/test_safety_gate.py"""
 from __future__ import annotations
 import pytest
-from src.auditor.safety import validate_method_safety, validate_request_security, SAFE_HTTP_METHODS
+from src.auditor.safety import validate_method_safety, SAFE_HTTP_METHODS
+from src.auditor.adversarial_guard import validate_request_security
 
 class TestValidateMethodSafety:
     def test_safe_methods_allowed_by_default(self):
