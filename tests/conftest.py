@@ -160,7 +160,7 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
                     update = json.loads(body.decode("utf-8") or "{}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     update = {}
-                self._MOCK_ACCOUNTS[acc_id].update(
+                _MOCK_ACCOUNTS[acc_id].update(
                     {k: v for k, v in update.items() if k in ("balance", "owner")}
                 )
                 self._json(200, {"updated": True, "account": _MOCK_ACCOUNTS[acc_id]})

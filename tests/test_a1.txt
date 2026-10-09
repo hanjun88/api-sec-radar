@@ -1,0 +1,2 @@
+# Test file A1
+from src.auditor.hook import RequestHook, build_hook_chain, _build_signing_base, _compute_signature, NonceCache

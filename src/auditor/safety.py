@@ -99,14 +99,32 @@ def _detect_body_encoding(body: Optional[str]) -> str:
     """
     探测 body 编码形态。返回标识串：
     ``plain`` / ``base64_json`` / ``gzip`` / ``empty``。
+
+    兼容 str 与 bytes 输入；bytes 输入时直接按字节匹配 gzip 魔数。
     """
-    if not body or not body.strip():
+    if not body or (isinstance(body, str) and not body.strip()):
         return "empty"
+    if isinstance(body, (bytes, bytearray)):
+        if not body:
+            return "empty"
+        # gzip 魔数 0x1f 0x8b
+        if body[:2] == b"\x1f\x8b":
+            return "gzip"
+        try:
+            gzip.decompress(bytes(body))
+            return "gzip"
+        except (OSError, binascii.Error):
+            pass
+        # base64 编码的 JSON：纯 base64 字符集且长度合理
+        try:
+            text = body.decode("ascii")
+        except UnicodeDecodeError:
+            return "plain"
+        return _detect_body_encoding(text)
     sample = body.strip()
     # gzip 魔数 0x1f 0x8b
     if body.startswith("\x1f\x8b"):
         return "gzip"
-    # 尝试 gzip 解压（防御性：二进制字面量在 str 中少见，这里仅识别魔数）
     try:
         gzip.decompress(body.encode("latin-1"))
         return "gzip"
