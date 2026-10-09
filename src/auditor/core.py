@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
+from .adversarial_guard import validate_request_security
 from .safety import validate_method_safety
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,42 @@ class ApiAccessAuditor:
     def execute(self, params: DifferentialTestInput) -> DifferentialTestOutput:
         """执行确定性差分测试，输出证据链。"""
         self.validate_inputs(params)
+
+        # 统一请求安全门禁（P0-INVARIANT-03 前置守卫）：
+        # URL 合法性 / Header 合法性（CRLF 注入）/ 方法覆盖解析 /
+        # 写熔断 / 对抗绕过检测。primary 与 secondary 两个身份均须通过，
+        # 否则任一身份携带的覆盖头或注入载荷都会在核心路径上绕过基础门禁。
+        for identity in (params.primary, params.secondary):
+            gate_ok, gate_reason, _gate_findings = validate_request_security(
+                url=identity.url,
+                method=identity.method,
+                headers=identity.headers,
+                body=identity.body,
+                allow_write=params.allow_write,
+            )
+            if not gate_ok:
+                return DifferentialTestOutput(
+                    verdict="BLOCKED",
+                    confidence=1.0,
+                    similarity=0.0,
+                    primary=ResponseFingerprint(
+                        label=params.primary.label, status_code=0,
+                        content_length=0, content_hash="", content_type="",
+                        elapsed_ms=0, body_preview="",
+                    ),
+                    secondary=ResponseFingerprint(
+                        label=params.secondary.label, status_code=0,
+                        content_length=0, content_hash="", content_type="",
+                        elapsed_ms=0, body_preview="",
+                    ),
+                    evidence={
+                        "blocked_by": "REQUEST_SECURITY_GATE",
+                        "blocked_identity": identity.label,
+                        "method": identity.method.upper(),
+                        "allow_write": params.allow_write,
+                        "reason": gate_reason,
+                    },
+                )
 
         # P0-INVARIANT-03: 写操作物理熔断（在任何网络连接之前）
         # 传入 body 和 content_type 以检测 GET+body 写绕过

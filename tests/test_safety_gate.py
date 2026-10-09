@@ -1,8 +1,86 @@
 """tests/test_safety_gate.py — 写熔断门禁组 (B)"""
 from __future__ import annotations
 
+import pytest
+
 from src.auditor.adversarial_guard import validate_request_security
+from src.auditor.core import (
+    ApiAccessAuditor,
+    DifferentialTestInput,
+    RequestIdentity,
+)
 from src.auditor.safety import SAFE_HTTP_METHODS, validate_method_safety
+
+
+class TestCoreExecuteSecurityGate:
+    """核心 execute() 路径的统一安全门禁回归（审查更正：核心路径
+    此前只走基础 validate_method_safety，方法覆盖 / CRLF / URL 校验
+    在核心路径上不可达）。"""
+
+    def _input(self, method="GET", url="http://127.0.0.1/api/v1/health",
+               headers=None, body=None):
+        return DifferentialTestInput(
+            primary=RequestIdentity(
+                label="primary", method=method, url=url,
+                headers=headers or {}, body=body,
+            ),
+            secondary=RequestIdentity(
+                label="secondary", method=method, url=url,
+                headers={}, body=body,
+            ),
+        )
+
+    def test_method_override_header_blocked_in_core(self):
+        params = self._input(
+            headers={"X-Http-Method-Override": "DELETE"},
+        )
+        result = ApiAccessAuditor().execute(params)
+        assert result.verdict == "BLOCKED"
+        assert result.evidence["blocked_by"] == "REQUEST_SECURITY_GATE"
+        assert "P0-INVARIANT-03" in result.evidence["reason"]
+
+    def test_method_override_query_blocked_in_core(self):
+        params = self._input(
+            url="http://127.0.0.1/api/v1/health?_method=DELETE",
+        )
+        result = ApiAccessAuditor().execute(params)
+        assert result.verdict == "BLOCKED"
+        assert result.evidence["blocked_by"] == "REQUEST_SECURITY_GATE"
+
+    def test_crlf_header_blocked_in_core(self):
+        params = self._input(
+            headers={"X-Custom": "value\r\nInjected: true"},
+        )
+        result = ApiAccessAuditor().execute(params)
+        assert result.verdict == "BLOCKED"
+        assert "HEADER_CRLF_INJECTION" in result.evidence["reason"]
+
+    def test_secondary_identity_override_blocked_in_core(self):
+        params = DifferentialTestInput(
+            primary=RequestIdentity(
+                label="primary", method="GET",
+                url="http://127.0.0.1/api/v1/health",
+            ),
+            secondary=RequestIdentity(
+                label="secondary", method="GET",
+                url="http://127.0.0.1/api/v1/health",
+                headers={"X-Http-Method-Override": "PUT"},
+            ),
+        )
+        result = ApiAccessAuditor().execute(params)
+        assert result.verdict == "BLOCKED"
+        assert result.evidence["blocked_identity"] == "secondary"
+
+    def test_write_method_blocked_in_core(self):
+        params = self._input(method="PUT")
+        result = ApiAccessAuditor().execute(params)
+        assert result.verdict == "BLOCKED"
+        assert result.evidence["blocked_by"] == "REQUEST_SECURITY_GATE"
+
+    def test_clean_get_passes_core_gate(self):
+        params = self._input()
+        result = ApiAccessAuditor().execute(params)
+        assert result.verdict in ("VULNERABLE", "SAFE", "INCONCLUSIVE", "ERROR")
 
 
 class TestValidateMethodSafety:
@@ -77,6 +155,32 @@ class TestValidateRequestSecurity:
         )
         assert ok is False
         assert "P0-INVARIANT-03" in reason
+
+    def test_method_override_inline_query_detected(self):
+        ok, reason, _ = validate_request_security(
+            "http://x/api?_method=DELETE", "GET",
+        )
+        assert ok is False
+        assert "P0-INVARIANT-03" in reason
+
+    def test_method_override_inline_query_lowercase(self):
+        ok, reason, _ = validate_request_security(
+            "http://x/api?_method=delete", "GET",
+        )
+        assert ok is False
+
+    def test_normal_query_string_allowed(self):
+        ok, reason, _ = validate_request_security(
+            "http://x/api/v1/health?attempt=1", "GET",
+        )
+        assert ok is True
+
+    def test_explicit_query_overrides_inline(self):
+        ok, reason, _ = validate_request_security(
+            "http://x/api?_method=DELETE", "GET",
+            query_params={"_method": "GET"},
+        )
+        assert ok is True
 
     def test_adversarial_payload_blocked(self):
         ok, reason, _ = validate_request_security(

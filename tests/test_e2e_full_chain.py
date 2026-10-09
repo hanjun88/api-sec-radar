@@ -229,7 +229,10 @@ class TestMcpServerE2E:
             "secondary_headers": {"Authorization": "Bearer token-bob"},
         })
         assert result["verdict"] == "BLOCKED"
-        assert result["evidence"]["blocked_by"] == "P0-INVARIANT-03"
+        # 统一安全门禁（REQUEST_SECURITY_GATE）在 execute() 前置守卫中
+        # 先于基础 P0-INVARIANT-03 熔断拦截写操作
+        assert result["evidence"]["blocked_by"] == "REQUEST_SECURITY_GATE"
+        assert "P0-INVARIANT-03" in result["evidence"]["reason"]
 
 
 class TestArtifactEmitterCli:

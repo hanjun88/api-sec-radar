@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .safety import (
     SAFE_HTTP_METHODS,
@@ -310,12 +310,22 @@ def validate_request_security(
         （即便放行也可能含 info 级提示，如方法覆盖 / body 编码）。
     """
     headers = headers or {}
-    query_params = query_params or {}
+    query_params = dict(query_params or {})
 
     # 1. URL 合法性
     url_ok, url_reason = validate_url(url)
     if not url_ok:
         return False, f"URL_REJECTED: {url_reason}", []
+
+    # 1.5 解析 URL 内嵌 query 参数并合并（显式 query_params 优先），
+    # 使 ``?_method=DELETE`` 等内嵌覆盖在核心路径上同样可达
+    try:
+        inline_qs = parse_qs(urlparse(url).query, keep_blank_values=True)
+    except ValueError:
+        inline_qs = {}
+    for key, values in inline_qs.items():
+        if key not in query_params and values:
+            query_params[key] = values[0]
 
     # 2. Header 合法性
     header_problems = validate_headers(headers)
