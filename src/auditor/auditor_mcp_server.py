@@ -16,6 +16,8 @@ api_access_auditor/server.py — MCP 服务入口
 from __future__ import annotations
 
 import json
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -25,6 +27,15 @@ from .core import (
     ApiAccessAuditor,
     DifferentialTestInput,
     RequestIdentity,
+)
+from .multi_agent import (
+    AgentContext,
+    AuditOrchestrator,
+    DiffAgent,
+    EvidenceAgent,
+    ParallelPipeline,
+    ReconAgent,
+    RemediationAgent,
 )
 from .openapi import filter_auditable, filter_safe_methods, parse_openapi_spec
 from .pipeline_orchestrator import (
@@ -38,6 +49,7 @@ from .scope import ScopePolicy
 
 mcp = MCPServer("api-access-auditor")
 _auditor = ApiAccessAuditor()
+_orchestrator = AuditOrchestrator()
 
 
 def _coerce_headers(raw: str | dict[str, str] | None) -> dict[str, str]:
@@ -384,6 +396,156 @@ def verify_remediation(
         secondary_token=secondary_token,
     )
     return {"status": "DELIVERED", **result}
+
+
+# ── Multi-Agent 编排工具（蚁后 / 工蚁架构）──────────────
+
+
+@mcp.tool()
+def multi_agent_recon(
+    urls: list[str],
+    primary_token: str = "",
+    secondary_token: str = "",
+    similarity_threshold: float = 0.85,
+) -> dict[str, Any]:
+    """
+    Multi-Agent 侦察：并行派发侦察蚁探测 URL 列表。
+
+    蚁后（编排者）拆解 URL 列表 → MapReduce pipeline
+    并行派发侦察蚁（只读 GET）→ 归巢汇总。
+    侦察蚁只读，不产生写流量（P0-INVARIANT-03）。
+    """
+    context = AgentContext(
+        task_id=f"recon-{uuid.uuid4().hex[:8]}",
+        allow_write=False,
+        primary_token=primary_token,
+        secondary_token=secondary_token,
+        similarity_threshold=similarity_threshold,
+    )
+    pipeline = _orchestrator.plan_recon(urls, context)
+    summary = _orchestrator.run_pipeline(pipeline, context, urls)
+    return {"status": "DELIVERED", **summary}
+
+
+@mcp.tool()
+def multi_agent_diff_sweep(
+    endpoints: list[dict[str, Any]],
+    allow_write: bool = False,
+    primary_token: str = "",
+    secondary_token: str = "",
+    similarity_threshold: float = 0.85,
+) -> dict[str, Any]:
+    """
+    Multi-Agent 差分扫描：并行派发差分蚁测试端点矩阵。
+
+    蚁后拆解端点矩阵 → MapReduce pipeline 并行派发
+    差分蚁 → 归巢汇总。差分蚁的写操作默认物理熔断
+    （allow_write=False），需显式 allow_write=True。
+    """
+    context = AgentContext(
+        task_id=f"diff-{uuid.uuid4().hex[:8]}",
+        allow_write=allow_write,
+        primary_token=primary_token,
+        secondary_token=secondary_token,
+        similarity_threshold=similarity_threshold,
+    )
+    pipeline = _orchestrator.plan_diff_sweep(endpoints, context)
+    summary = _orchestrator.run_pipeline(pipeline, context, endpoints)
+    return {"status": "DELIVERED", **summary}
+
+
+@mcp.tool()
+def multi_agent_full_audit(
+    urls: list[str],
+    primary_token: str = "",
+    secondary_token: str = "",
+    similarity_threshold: float = 0.85,
+) -> dict[str, Any]:
+    """
+    Multi-Agent 全链路审计：侦察 → 差分 → 取证（顺序依赖）。
+
+    蚁后维护计划 DAG：侦察蚁（只读）→ 差分蚁 →
+    取证蚁（PoC 生成）。顺序 pipeline 保证依赖顺序。
+    """
+    context = AgentContext(
+        task_id=f"audit-{uuid.uuid4().hex[:8]}",
+        allow_write=False,
+        primary_token=primary_token,
+        secondary_token=secondary_token,
+        similarity_threshold=similarity_threshold,
+    )
+    pipeline = _orchestrator.plan_full_audit(urls, context)
+    # 全链路计划以第一个 URL 为任务载体（顺序依赖）
+    task = {"url": urls[0]} if urls else {}
+    summary = _orchestrator.run_pipeline(pipeline, context, task)
+    return {"status": "DELIVERED", **summary}
+
+
+@mcp.tool()
+def multi_agent_parallel(
+    tasks: list[dict[str, Any]],
+    agent_type: str = "diff",
+    allow_write: bool = False,
+    primary_token: str = "",
+    secondary_token: str = "",
+    max_workers: int = 4,
+) -> dict[str, Any]:
+    """
+    Multi-Agent 并行派发：同构工蚁并行执行异构任务。
+
+    agent_type: recon | diff | evidence | remediation
+    Parallel pipeline：工蚁并发执行（线程池），
+    适用于无依赖的并行任务面。
+    """
+    agent_classes = {
+        "recon": ReconAgent,
+        "diff": DiffAgent,
+        "evidence": EvidenceAgent,
+        "remediation": RemediationAgent,
+    }
+    cls = agent_classes.get(agent_type)
+    if cls is None:
+        return {
+            "status": "FAIL",
+            "error": f"UNKNOWN_AGENT_TYPE: {agent_type}（支持 recon/diff/evidence/remediation）",
+        }
+    context = AgentContext(
+        task_id=f"parallel-{uuid.uuid4().hex[:8]}",
+        allow_write=allow_write,
+        primary_token=primary_token,
+        secondary_token=secondary_token,
+    )
+    agents = [cls() for _ in tasks]
+    pipeline = ParallelPipeline(
+        name=f"parallel-{agent_type}",
+        agents=agents,
+        max_workers=max_workers,
+    )
+    # 并行 pipeline：每个工蚁取对应任务
+    results: list[dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=pipeline.max_workers) as pool:
+        futures = [
+            pool.submit(agent.run, context, task)
+            for agent, task in zip(agents, tasks, strict=False)
+        ]
+        for future in futures:
+            r = future.result()
+            results.append({
+                "agent_id": r.agent_id,
+                "agent_type": r.agent_type,
+                "status": r.status,
+                "output": r.output,
+                "error": r.error,
+            })
+    completed = sum(1 for r in results if r["status"] == "completed")
+    return {
+        "status": "DELIVERED",
+        "pipeline": pipeline.name,
+        "total_agents": len(results),
+        "completed": completed,
+        "failed": len(results) - completed,
+        "results": results,
+    }
 
 
 if __name__ == "__main__":

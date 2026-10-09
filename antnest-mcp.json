@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "api_sec_radar": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["-m", "src.auditor.auditor_mcp_server"],
+      "env": {}
+    }
+  }
+}
