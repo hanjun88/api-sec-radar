@@ -53,6 +53,14 @@ else
   echo "[BRIDGE] src/pipeline/ws_bridge_server.py 未找到，跳过 WS 网关 (仅 Auto Sim 模式可用)"
 fi
 
+# 4.5. 编译 dashboard 前端产物 (SceneManager 单一可信源: src/webgl/SceneManager.ts → dashboard/vendor/)
+if command -v npm >/dev/null 2>&1; then
+  echo "[BUILD] 编译 dashboard 前端产物..."
+  (cd "$PROJECT_ROOT" && npm run build:dashboard)
+else
+  echo "[WARN] npm 未找到，跳过 dashboard 构建 (需仓库已提交 dashboard/vendor 产物)"
+fi
+
 # 5. 启动本地轻量 HTTP 静态服务器 (消除 ES Module file:// 协议限制)
 echo "[HTTP] 托管态势大屏静态资源 (端口: $HTTP_PORT)..."
 python3 -m http.server "$HTTP_PORT" --directory "$PROJECT_ROOT" >/dev/null 2>&1 &
@@ -71,5 +79,11 @@ elif command -v open >/dev/null 2>&1; then
   open "$TARGET_URL" >/dev/null 2>&1 &
 fi
 
-echo "[PIPELINE] 态势大屏全链路就绪。按 Ctrl+C 终止运行。"
+echo "[PIPELINE] 网关 + 静态托管已就绪（大屏已在浏览器打开）。"
+echo "[PIPELINE] 注意: 本脚本仅启动了 WS 广播网关与 HTTP 静态托管，"
+echo "           实时扫描推流器(feeder)需另开终端单独启动："
+echo "             python3 src/pipeline/live_scan_feeder.py"
+echo "           压测模式(备用流):"
+echo "             python3 src/pipeline/test_stream_feeder.py"
+echo "[PIPELINE] 按 Ctrl+C 终止运行。"
 wait

@@ -23,7 +23,4 @@ COPY --chown=appuser:appuser pytest.ini .
 
 EXPOSE 8765
 
-HEALTHCHECK --interval=5s --timeout=3s --start-period=3s --retries=3 \
-  CMD python3 -c "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8765)); s.close()" || exit 1
-
 CMD ["python3", "src/pipeline/ws_bridge_server.py"]

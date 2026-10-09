@@ -263,7 +263,7 @@ class ResponseFingerprint(BaseModel):
 
 class DifferentialTestOutput(BaseModel):
     """差分测试输出（确定性证据链）。"""
-    verdict: str = Field(description="VULNERABLE / SAFE / INCONCLUSIVE / ERROR")
+    verdict: str = Field(description="VULNERABLE / SAFE / BLOCKED / INCONCLUSIVE / ERROR / SUSPECT / PRIV_ESCALATION / LIKELY_SAFE")
     confidence: float = Field(ge=0.0, le=1.0)
     similarity: float = Field(ge=0.0, le=1.0, description="响应体结构化相似度")
     primary: ResponseFingerprint

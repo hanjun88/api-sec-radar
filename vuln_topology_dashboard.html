@@ -106,6 +106,7 @@
 <div class="hud hud-br">
   <div class="hud-label">Pipeline</div>
   <div class="hud-value" id="pipeline-status">READY</div>
+  <div class="hud-value" id="ws-hint" style="color:#5a6a8a;font-size:10px;margin-top:4px">等待 ws://127.0.0.1:8765 网关接入…</div>
   <div class="divider"></div>
   <div class="hud-label">FPS</div>
   <div class="hud-value" id="fps">60</div>
@@ -119,14 +120,20 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    "three": "./dashboard/vendor/three.module.js",
+    "three/addons/": "./dashboard/vendor/addons/"
   }
 }
 </script>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { SceneManager } from './dashboard/vendor/SceneManager.js';
+
+// feeder/verdict('VULNERABLE'|'SAFE'|'BLOCKED') → stats key / CSS 类名统一映射
+// 修复 P1-1：verdict.toLowerCase() 得 'vulnerable'，与 stats/CSS 的 'vuln' 对不上
+const VERDICT_CLASS = { vulnerable: 'vuln', safe: 'safe', blocked: 'blocked' };
+const verdictClass = (verdict) => VERDICT_CLASS[String(verdict).toLowerCase()] || 'vuln';
 
 const VulnTopologySkill = {
   id: 'skill:frontend:vuln-topology',
@@ -238,57 +245,12 @@ const VulnTopologySkill = {
   fallback(container) { container.innerHTML = '<div style="color:#ff4444;padding:20px">WebGL 2.0 unsupported — degraded to table render</div>'; }
 };
 
-class SceneManager {
-  constructor({ canvas, width, height, cameraPosition }) {
-    this.canvas = canvas; this.width = width; this.height = height;
-    this.scene = null; this.camera = null; this.renderer = null; this.controls = null;
-    this.clock = new THREE.Clock(); this.elapsed = 0; this.updateCallbacks = [];
-    this.rafId = null; this.disposed = false;
-    this.cameraPosition = cameraPosition || [0, 6, 8];
-    this.fps = 60; this.frameCount = 0; this.fpsTime = 0;
-  }
-  mount() {
-    this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x0a0e17, 0.04);
-    this.camera = new THREE.PerspectiveCamera(50, this.width / this.height, 0.1, 100);
-    this.camera.position.set(...this.cameraPosition);
-    this.camera.lookAt(0, 0, 0);
-    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, alpha: true });
-    this.renderer.setSize(this.width, this.height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.2;
-    this.controls = new OrbitControls(this.camera, this.canvas);
-    this.controls.enableDamping = true; this.controls.dampingFactor = 0.05;
-    this.controls.minDistance = 4; this.controls.maxDistance = 20;
-    this.controls.maxPolarAngle = Math.PI / 2.1;
-    const ambient = new THREE.AmbientLight(0x404060, 0.6); this.scene.add(ambient);
-    const dirLight = new THREE.DirectionalLight(0x88aaff, 0.8); dirLight.position.set(5, 10, 5); this.scene.add(dirLight);
-    const pointLight = new THREE.PointLight(0x00ff88, 0.5, 15); pointLight.position.set(0, 2, 0); this.scene.add(pointLight);
-    window.addEventListener('resize', this.handleResize);
-  }
-  getScene() { return this.scene; }
-  onUpdate(callback) { this.updateCallbacks.push(callback); return () => { this.updateCallbacks = this.updateCallbacks.filter(cb => cb !== callback); }; }
-  start() { this.clock.start(); this.loop(); }
-  loop() {
-    if (this.disposed) return;
-    this.rafId = requestAnimationFrame(() => this.loop());
-    const delta = Math.min(this.clock.getDelta(), 0.1);
-    this.elapsed += delta;
-    this.frameCount++; this.fpsTime += delta;
-    if (this.fpsTime >= 1) { this.fps = Math.round(this.frameCount / this.fpsTime); this.frameCount = 0; this.fpsTime = 0; const fpsEl = document.getElementById('fps'); if (fpsEl) fpsEl.textContent = this.fps; }
-    this.updateCallbacks.forEach(cb => cb(delta, this.elapsed));
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-  }
-  handleResize = () => { this.width = window.innerWidth; this.height = window.innerHeight; this.camera.aspect = this.width / this.height; this.camera.updateProjectionMatrix(); this.renderer.setSize(this.width, this.height); };
-  dispose() { this.disposed = true; if (this.rafId) cancelAnimationFrame(this.rafId); window.removeEventListener('resize', this.handleResize); this.controls.dispose(); this.renderer.dispose(); this.updateCallbacks = []; }
-}
-
 class DashboardBridge {
   constructor(canvas) {
-    this.sceneManager = new SceneManager({ canvas, width: window.innerWidth, height: window.innerHeight, cameraPosition: [0, 7, 10] });
+    this.canvas = canvas;
+    this.sceneManager = new SceneManager({ canvas, width: window.innerWidth, height: window.innerHeight, cameraPosition: [0, 7, 10], alpha: true, pixelRatio: Math.min(window.devicePixelRatio || 1, 2) });
     this.topologyInstance = null; this.unbindUpdate = null;
+    this.controls = null; this.unbindControlsTick = null; this.unbindFps = null;
     this.stats = { vuln: 0, safe: 0, blocked: 0 };
   }
   init() {
@@ -296,6 +258,26 @@ class DashboardBridge {
     const scene = this.sceneManager.getScene();
     if (!scene) throw new Error('SCENE_INIT_FAILED');
     this.topologyInstance = VulnTopologySkill.mount(scene, VulnTopologySkill.config);
+    // P2-4 backport：旧内联 SceneManager 自带的 OrbitControls 交互移至胶水层，
+    // SceneManager.ts（单一可信源）保持纯净、可测，不引入 addons 依赖。
+    const camera = this.sceneManager.getCamera();
+    if (camera) {
+      this.controls = new OrbitControls(camera, this.canvas);
+      this.controls.enableDamping = true; this.controls.dampingFactor = 0.05;
+      this.controls.minDistance = 4; this.controls.maxDistance = 20;
+      this.controls.maxPolarAngle = Math.PI / 2.1;
+      this.unbindControlsTick = this.sceneManager.onUpdate(() => { if (this.controls) this.controls.update(); });
+    }
+    // P2-4 backport：旧内联 loop() 内的 FPS 计数移至胶水层（TS 版 loop 不含 FPS）
+    let frames = 0, acc = 0;
+    this.unbindFps = this.sceneManager.onUpdate((delta) => {
+      frames++; acc += delta;
+      if (acc >= 1) {
+        const fpsEl = document.getElementById('fps');
+        if (fpsEl) fpsEl.textContent = Math.round(frames / acc);
+        frames = 0; acc = 0;
+      }
+    });
     this.unbindUpdate = this.sceneManager.onUpdate((delta, elapsed) => { if (this.topologyInstance) VulnTopologySkill.update(delta, elapsed, this.topologyInstance); });
     this.sceneManager.start();
     this.updateHUD();
@@ -303,7 +285,7 @@ class DashboardBridge {
   handleRemoteArtifact(artifact) {
     if (!this.topologyInstance) return;
     const result = this.topologyInstance.ingest(artifact);
-    if (result) { this.stats[artifact.verdict.toLowerCase()]++; this.updateHUD(); this.addEventLog(artifact); }
+    if (result) { this.stats[verdictClass(artifact.verdict)]++; this.updateHUD(); this.addEventLog(artifact); }
   }
   updateHUD() {
     document.getElementById('node-count').textContent = `${this.topologyInstance ? this.topologyInstance.activeNodeCount() : 0} NODES`;
@@ -314,14 +296,14 @@ class DashboardBridge {
   addEventLog(artifact) {
     const log = document.getElementById('event-log');
     const item = document.createElement('div');
-    item.className = `event-item ${artifact.verdict.toLowerCase()}`;
+    item.className = `event-item ${verdictClass(artifact.verdict)}`;
     const similarity = artifact.evidence?.response_similarity?.toFixed(2) ?? '—';
     item.innerHTML = `<div class="event-method">${artifact.verdict} · conf:${(artifact.confidence * 100).toFixed(0)}%</div><div class="event-endpoint">${artifact.endpoint}</div><div class="event-meta">sim:${similarity} · ${artifact.technical_root_cause?.substring(0, 60) || ''}</div>`;
     log.insertBefore(item, log.firstChild);
     while (log.children.length > 30) log.removeChild(log.lastChild);
   }
   clear() { if (this.topologyInstance) { this.topologyInstance.clear(); this.stats = { vuln: 0, safe: 0, blocked: 0 }; this.updateHUD(); document.getElementById('event-log').innerHTML = ''; } }
-  destroy() { if (this.unbindUpdate) this.unbindUpdate(); const scene = this.sceneManager.getScene(); if (scene && this.topologyInstance) VulnTopologySkill.dispose(scene, this.topologyInstance); this.sceneManager.dispose(); }
+  destroy() { if (this.unbindUpdate) this.unbindUpdate(); if (this.unbindControlsTick) this.unbindControlsTick(); if (this.unbindFps) this.unbindFps(); if (this.controls) { this.controls.dispose(); this.controls = null; } const scene = this.sceneManager.getScene(); if (scene && this.topologyInstance) VulnTopologySkill.dispose(scene, this.topologyInstance); this.sceneManager.dispose(); }
 }
 
 const MOCK_ENDPOINTS = ['GET /api/v1/users/{id}', 'GET /api/v1/orders/{id}', 'GET /api/v1/accounts/{id}', 'POST /api/v1/auth/login', 'GET /api/v1/transactions/{id}', 'GET /api/v1/profile', 'PUT /api/v1/users/{id}/settings', 'DELETE /api/v1/sessions/{id}', 'GET /api/v1/wallet/{id}', 'POST /api/v1/transfer', 'GET /api/v1/documents/{id}', 'PATCH /api/v1/profile', 'GET /api/v1/admin/users', 'POST /api/v1/admin/config', 'GET /api/v1/audit-logs', 'GET /api/v1/payment/orders/{id}', 'POST /api/v1/payment/refund', 'GET /api/v1/notifications', 'PUT /api/v1/password/change', 'GET /api/v1/devices/{id}', 'DELETE /api/v1/devices/{id}', 'GET /api/v1/invitations', 'POST /api/v1/invitations/redeem', 'GET /api/v1/referrals/stats'];
@@ -337,25 +319,30 @@ let wsSocket = null;
 let wsReconnectTimer = null;
 function connectRealPipeline(wsUrl) {
   const targetUrl = wsUrl || 'ws://127.0.0.1:8765';
+  // P2-3：先清掉旧的重连 timer，防止多次调用叠加出多个 timer
+  if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   stopAutoSim();
   if (wsSocket) { wsSocket.onclose = null; wsSocket.close(); }
   wsSocket = new WebSocket(targetUrl);
-  wsSocket.onopen = () => { document.getElementById('pulse-dot').style.display = 'inline-block'; document.getElementById('scan-status').textContent = 'LIVE MCP'; document.getElementById('pipeline-status').textContent = 'CONNECTED'; document.getElementById('btn-live').classList.add('live'); };
+  wsSocket.onopen = () => { document.getElementById('pulse-dot').style.display = 'inline-block'; document.getElementById('scan-status').textContent = 'LIVE MCP'; document.getElementById('pipeline-status').textContent = 'CONNECTED'; document.getElementById('btn-live').classList.add('live'); document.getElementById('ws-hint').style.display = 'none'; };
   wsSocket.onmessage = (event) => { try { const artifact = JSON.parse(event.data); bridge.handleRemoteArtifact(artifact); } catch (err) { console.error('[BRIDGE_PAYLOAD_PARSE_ERROR]', err); } };
-  wsSocket.onclose = () => { document.getElementById('scan-status').textContent = 'RECONNECTING'; document.getElementById('pipeline-status').textContent = 'OFFLINE'; document.getElementById('btn-live').classList.remove('live'); wsReconnectTimer = setTimeout(() => connectRealPipeline(targetUrl), 3000); };
+  wsSocket.onclose = () => { document.getElementById('scan-status').textContent = 'RECONNECTING'; document.getElementById('pipeline-status').textContent = 'OFFLINE'; document.getElementById('btn-live').classList.remove('live'); document.getElementById('ws-hint').style.display = 'block'; wsReconnectTimer = setTimeout(() => connectRealPipeline(targetUrl), 3000); };
   wsSocket.onerror = () => { wsSocket.close(); };
 }
 function disconnectRealPipeline() {
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   if (wsSocket) { wsSocket.onclose = null; wsSocket.close(); wsSocket = null; }
   document.getElementById('btn-live').classList.remove('live');
+  document.getElementById('ws-hint').style.display = 'block';
 }
 
 const container = document.getElementById('canvas-container');
 const canvas = document.createElement('canvas');
 container.appendChild(canvas);
 const bridge = new DashboardBridge(canvas);
-bridge.init();
+// P1-2：WebGL 初始化失败不得中断 module script——降级提示，按钮监听照常绑定
+try { bridge.init(); }
+catch (e) { console.error('[DASHBOARD_INIT_FAILED]', e); VulnTopologySkill.fallback(container); }
 let autoSim = true;
 let simInterval = null;
 function startAutoSim() {

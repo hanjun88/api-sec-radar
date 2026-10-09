@@ -21,6 +21,7 @@ from .core import (
 )
 from .hook import RequestHook, build_hook_chain
 from .openapi import parse_openapi_spec, filter_auditable, filter_safe_methods
+from .report import emit_audit_report as _emit_audit_report
 from .sandbox_verifier import verify_python_patch
 
 mcp = FastMCP("api-access-auditor")
@@ -476,13 +477,14 @@ def verify_remediation(
     secondary_token: str = "token-bob",
 ) -> Dict[str, Any]:
     """
-    对生成的修复补丁执行沙盒语法编译与行级安全语义断言。
-    只有通过验证（verified_safe=True），整个越权审计与自愈流程才算闭环。
+    对生成的修复补丁执行沙盒语法编译与行级安全语义断言（纯静态检查，
+    不发起任何真实网络请求，``verified_safe`` 恒为 False）。
 
-    验证流程：
+    诚实声明：本工具当前只做静态验证——
     1. 静态编译检查（SyntaxError → COMPILE_ERROR）
-    2. 行级安全语义断言（必须包含 tenant_id/owner_id/current_user/user_id + 404/NOT_FOUND）
-    3. 物理断言模拟（Context A 维持 200，Context B 返回 404 实体屏蔽）
+    2. AST 级行级安全语义断言（必须同时包含 tenant_filter 绑定与 404 实体屏蔽）
+    静态通过记为 remediation_status=STATIC_AST_PASSED。真正的"闭环"（修复后
+    Context A 200 / Context B 404 的物理重放验证）为后续 feature，见 README。
     """
     result = verify_python_patch(
         test_url=test_url,
@@ -492,6 +494,24 @@ def verify_remediation(
         secondary_token=secondary_token,
     )
     return {"status": "DELIVERED", **result}
+
+
+@mcp.tool()
+def emit_audit_report(
+    scan_result: Dict[str, Any],
+    target: str = "",
+    output_dir: str = "reports",
+) -> Dict[str, Any]:
+    """
+    将 batch_differential_scan 聚合结果渲染为 Markdown + JSON 审计报告并落盘。
+    报告包含目标、时间、扫描条目数、verdict 分布，以及每条 finding 的
+    endpoint / verdict / confidence / evidence。
+    """
+    try:
+        out = _emit_audit_report(scan_result, target=target, output_dir=output_dir)
+    except (OSError, ValueError) as e:
+        return {"status": "FAIL", "error": f"报告落盘失败: {e}"}
+    return {"status": "DELIVERED", **out}
 
 
 if __name__ == "__main__":

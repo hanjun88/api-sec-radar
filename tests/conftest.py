@@ -160,7 +160,7 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
                     update = json.loads(body.decode("utf-8") or "{}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     update = {}
-                self._MOCK_ACCOUNTS[acc_id].update(
+                _MOCK_ACCOUNTS[acc_id].update(
                     {k: v for k, v in update.items() if k in ("balance", "owner")}
                 )
                 self._json(200, {"updated": True, "account": _MOCK_ACCOUNTS[acc_id]})
@@ -174,3 +174,259 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
 # ── Fixtures ─────────────────────────────────────────────────
 
 
+@pytest.fixture(scope="module")
+def mock_target_server() -> Generator[str, None, None]:
+    """启动本地漏洞靶场 HTTP server，返回基址 http://127.0.0.1:<port>。
+
+    模块级共享：同一测试文件内所有用例复用，结束后自动 shutdown。
+    """
+    server = HTTPServer(("127.0.0.1", 0), _MockTargetHandler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    # 等待端口就绪
+    time.sleep(0.2)
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        yield base_url
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.fixture(scope="session")
+def mock_openapi_spec() -> str:
+    """返回包含 12 个端点的 OpenAPI 3.0 规范字符串。"""
+    spec: Dict[str, Any] = {
+        "openapi": "3.0.0",
+        "info": {"title": "Acme API", "version": "1.0.0"},
+        "servers": [{"url": "http://target.local"}],
+        "paths": {
+            "/api/v1/accounts/{accountId}": {
+                "get": {"summary": "Get account by id"},
+                "put": {"summary": "Update account by id"},
+            },
+            "/api/v1/accounts": {
+                "get": {"summary": "List accounts"},
+                "post": {
+                    "summary": "Create account",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "example": {"owner": "new-user", "balance": 0}
+                            }
+                        }
+                    },
+                },
+            },
+            "/api/v1/users/{userId}": {"get": {"summary": "Get user"}},
+            "/api/v1/orders/{orderId}": {
+                "get": {"summary": "Get order"},
+                "delete": {"summary": "Delete order"},
+            },
+            "/api/v1/products/{productId}": {"get": {"summary": "Get product"}},
+            "/api/v1/admin/users": {"get": {"summary": "List admin users"}},
+            "/api/v1/health": {"get": {"summary": "Health check"}},
+        },
+    }
+    return json.dumps(spec)
+
+
+@pytest.fixture(scope="session")
+def mock_har_content() -> str:
+    """返回包含 6 个请求的 HAR JSON 字符串。"""
+    entries = []
+    for acc_id in ("1001", "1002", "1003"):
+        entries.append({
+            "request": {
+                "method": "GET",
+                "url": f"http://target.local/api/v1/accounts/{acc_id}",
+                "headers": [{"name": "Authorization", "value": "Bearer token-alice"}],
+                "queryString": [],
+            },
+            "response": {"status": 200, "content": {"text": "{}"}},
+        })
+    entries.append({
+        "request": {
+            "method": "GET",
+            "url": "http://target.local/api/v1/orders/ORD-9001",
+            "headers": [{"name": "Authorization", "value": "Bearer token-alice"}],
+            "queryString": [],
+        },
+        "response": {"status": 200, "content": {"text": "{}"}},
+    })
+    entries.append({
+        "request": {
+            "method": "POST",
+            "url": "http://target.local/api/v1/accounts",
+            "headers": [{"name": "Authorization", "value": "Bearer token-alice"}],
+            "queryString": [],
+            "postData": {"text": '{"owner":"x"}'},
+        },
+        "response": {"status": 201, "content": {"text": "{}"}},
+    })
+    entries.append({
+        "request": {
+            "method": "GET",
+            "url": "http://target.local/api/v1/health",
+            "headers": [{"name": "Authorization", "value": "Bearer token-alice"}],
+            "queryString": [],
+        },
+        "response": {"status": 200, "content": {"text": "{}"}},
+    })
+    return json.dumps({"log": {"version": "1.2", "creator": {"name": "t", "version": "1"}, "entries": entries}})
+
+
+@pytest.fixture(scope="session")
+def sample_poc_report() -> Dict[str, Any]:
+    """返回一个完整的 PoCReport dict。"""
+    return {
+        "poc_id": "POC-TEST000001",
+        "endpoint": "GET /api/v1/accounts/1001",
+        "method": "GET",
+        "url": "http://target.local/api/v1/accounts/1001",
+        "vulnerability_type": "BOLA/IDOR",
+        "severity": "critical",
+        "confidence": 0.97,
+        "similarity": 0.98,
+        "primary_status": 200,
+        "secondary_status": 200,
+        "primary_request": {
+            "method": "GET",
+            "url": "http://target.local/api/v1/accounts/1001",
+            "headers": {"Authorization": "***REDACTED***"},
+            "expected_status": 200,
+        },
+        "secondary_request": {
+            "method": "GET",
+            "url": "http://target.local/api/v1/accounts/1001",
+            "headers": {"Authorization": "***REDACTED***"},
+            "expected_status": 200,
+        },
+        "evidence": {
+            "status_match": True,
+            "primary_status": 200,
+            "secondary_status": 200,
+            "similarity": 0.98,
+            "threshold": 0.85,
+            "content_length_delta": 0,
+        },
+        "root_cause": "Endpoint extracts account_id from URL without ownership check.",
+        "remediation_hint": "Bind lookup to current_user.tenant_id and return 404.",
+    }
+
+
+@pytest.fixture(scope="session")
+def sample_pipeline_result(sample_poc_report: Dict[str, Any]) -> Dict[str, Any]:
+    """返回一个完整的流水线结果 dict。"""
+    return {
+        "pipeline_id": "PIPE-TEST000001",
+        "program_id": "PROG-TEST000001",
+        "program_name": "Test Program",
+        "started_at": "2026-09-12T00:00:00+00:00",
+        "finished_at": "2026-09-12T00:00:01+00:00",
+        "elapsed_ms": 1234.5,
+        "ingestion": {
+            "total_ingested": 6,
+            "in_scope": 6,
+            "out_of_scope_filtered": 0,
+            "auditable_count": 4,
+            "safe_method_count": 5,
+            "sources": ["har"],
+        },
+        "scan": {
+            "scan_id": "SCAN-TEST000001",
+            "status": "completed",
+            "total_targets": 6,
+            "scanned": 6,
+            "vulnerable": 3,
+            "safe": 1,
+            "blocked": 1,
+            "inconclusive": 1,
+            "error": 0,
+            "elapsed_ms": 1100.0,
+        },
+        "poc": {
+            "total_vulnerabilities": 3,
+            "by_severity": {"critical": 1, "high": 2, "medium": 0, "low": 0, "informational": 0},
+        },
+        "target_matrix": [],
+        "scan_result": None,
+        "poc_reports": [sample_poc_report],
+        "estimated_bounty": 9000.0,
+        "bounty_breakdown": {"critical": 5000.0, "high": 4000.0},
+        "status": "completed",
+        "errors": [],
+    }
+
+
+# ── MCP stdio 客户端（E2E 复用）──────────────────────────────
+
+
+class MCPTestClient:
+    """最小 MCP stdio JSON-RPC 客户端，用于端到端测试 MCP server 子进程。"""
+
+    def __init__(self, command: list[str]) -> None:
+        import subprocess
+        self.proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=0,
+        )
+        self._req_id = 0
+
+    def call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self._req_id += 1
+        payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": self._req_id, "method": method}
+        if params is not None:
+            payload["params"] = params
+        assert self.proc.stdin is not None
+        assert self.proc.stdout is not None
+        self.proc.stdin.write(json.dumps(payload) + "\n")
+        self.proc.stdin.flush()
+        line = self.proc.stdout.readline()
+        if not line:
+            assert self.proc.stderr is not None
+            raise RuntimeError(f"MCP server exited: {self.proc.stderr.read()}")
+        return json.loads(line)
+
+    def notify(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
+        payload: Dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            payload["params"] = params
+        assert self.proc.stdin is not None
+        self.proc.stdin.write(json.dumps(payload) + "\n")
+        self.proc.stdin.flush()
+
+    def tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        raw = self.call("tools/call", {"name": name, "arguments": arguments})
+        return json.loads(raw["result"]["content"][0]["text"])
+
+    def close(self) -> None:
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=5)
+        except Exception:
+            self.proc.kill()
+            self.proc.wait()
+
+
+@pytest.fixture(scope="module")
+def auditor_mcp_client(mock_target_server: str):
+    """启动 src.auditor MCP 子进程并完成 initialize 握手。"""
+    pytest.importorskip("mcp")
+    import sys as _sys
+    client = MCPTestClient([_sys.executable, "-m", "src.auditor.auditor_mcp_server"])
+    try:
+        client.call("initialize", {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "pytest", "version": "1.0"},
+        })
+        client.notify("notifications/initialized")
+        yield client
+    finally:
+        client.close()
