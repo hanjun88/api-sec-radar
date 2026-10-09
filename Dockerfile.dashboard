@@ -24,6 +24,18 @@ server {
         expires 1d;
         add_header Cache-Control "public, no-transform";
     }
+
+    # D1: WebSocket 反向代理到 ws-bridge 网关
+    location /ws {
+        proxy_pass http://ws-bridge:8765;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }
 }
 EOF
 

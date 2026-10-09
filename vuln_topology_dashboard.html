@@ -106,7 +106,7 @@
 <div class="hud hud-br">
   <div class="hud-label">Pipeline</div>
   <div class="hud-value" id="pipeline-status">READY</div>
-  <div class="hud-value" id="ws-hint" style="color:#5a6a8a;font-size:10px;margin-top:4px">等待 ws://127.0.0.1:8765 网关接入…</div>
+  <div class="hud-value" id="ws-hint" style="color:#5a6a8a;font-size:10px;margin-top:4px">等待 WebSocket 网关接入…</div>
   <div class="divider"></div>
   <div class="hud-label">FPS</div>
   <div class="hud-value" id="fps">60</div>
@@ -317,8 +317,23 @@ function generateArtifact() {
 
 let wsSocket = null;
 let wsReconnectTimer = null;
+
+function resolveWsEndpoint(explicit) {
+  // 优先级：显式入参 > window.__WS_ENDPOINT__ > ?ws= query > 同源 /ws
+  if (explicit) return explicit;
+  if (window.__WS_ENDPOINT__) return window.__WS_ENDPOINT__;
+  const params = new URLSearchParams(window.location.search);
+  const wsQuery = params.get('ws');
+  if (wsQuery) {
+    if (/^wss?:\/\//i.test(wsQuery)) return wsQuery;
+    return wsQuery;
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${window.location.host}/ws`;
+}
+
 function connectRealPipeline(wsUrl) {
-  const targetUrl = wsUrl || 'ws://127.0.0.1:8765';
+  const targetUrl = resolveWsEndpoint(wsUrl);
   // P2-3：先清掉旧的重连 timer，防止多次调用叠加出多个 timer
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   stopAutoSim();
