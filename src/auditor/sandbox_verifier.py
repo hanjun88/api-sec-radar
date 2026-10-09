@@ -8,10 +8,8 @@ sandbox_verifier.py: 修复补丁热载入与沙盒反向验证引擎
 from __future__ import annotations
 
 import ast
-import json
-from typing import Any, Dict, Optional
+from typing import Any
 
-import httpx
 from pydantic import BaseModel
 
 
@@ -41,9 +39,12 @@ def _extract_identifiers(node: ast.AST) -> set[str]:
             names.add(n.id)
         elif isinstance(n, ast.Attribute):
             names.add(n.attr)
-        elif isinstance(n, ast.Subscript) and isinstance(n.slice, ast.Constant):
-            if isinstance(n.slice.value, str):
-                names.add(n.slice.value)
+        elif (
+            isinstance(n, ast.Subscript)
+            and isinstance(n.slice, ast.Constant)
+            and isinstance(n.slice.value, str)
+        ):
+            names.add(n.slice.value)
     return names
 
 
@@ -86,9 +87,11 @@ def _has_tenant_filter_ast(patch_code: str) -> bool:
                     if _extract_identifiers(arg) & _TENANT_FILTER_NAMES:
                         return True
         # if 语句中的条件表达式：如 if account.owner_id != current_user.id
-        if isinstance(node, ast.If):
-            if _extract_identifiers(node.test) & _TENANT_FILTER_NAMES:
-                return True
+        if (
+            isinstance(node, ast.If)
+            and _extract_identifiers(node.test) & _TENANT_FILTER_NAMES
+        ):
+            return True
     return False
 
 
@@ -120,9 +123,12 @@ def _has_not_found_hide_ast(patch_code: str) -> bool:
                     func_names.add(n.attr)
             # 检查关键字参数 status_code=404 / status=404
             for kw in node.keywords:
-                if kw.arg in ("status_code", "status") and isinstance(kw.value, ast.Constant):
-                    if kw.value.value in _NOT_FOUND_STATUS_CODES:
-                        return True
+                if (
+                    kw.arg in ("status_code", "status")
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value in _NOT_FOUND_STATUS_CODES
+                ):
+                    return True
             # 检查位置参数：abort(404) / raise NotFound(404)
             if func_names & {"abort", "NotFound", "not_found"}:
                 for arg in node.args:
@@ -131,19 +137,29 @@ def _has_not_found_hide_ast(patch_code: str) -> bool:
             # JSONResponse / Response 等常见响应类
             if func_names & {"JSONResponse", "Response", "jsonify", "make_response", "ORJSONResponse"}:
                 for kw in node.keywords:
-                    if kw.arg in ("status_code", "status") and isinstance(kw.value, ast.Constant):
-                        if kw.value.value in _NOT_FOUND_STATUS_CODES:
-                            return True
+                    if (
+                        kw.arg in ("status_code", "status")
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value in _NOT_FOUND_STATUS_CODES
+                    ):
+                        return True
         # raise 语句：raise HTTPException(status_code=404)
-        if isinstance(node, ast.Raise) and node.exc:
-            if _has_not_found_hide_ast_single(node.exc):
-                return True
+        if (
+            isinstance(node, ast.Raise)
+            and node.exc
+            and _has_not_found_hide_ast_single(node.exc)
+        ):
+            return True
         # 直接赋值：response.status_code = 404
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Attribute) and target.attr in ("status_code", "status"):
-                    if isinstance(node.value, ast.Constant) and node.value.value in _NOT_FOUND_STATUS_CODES:
-                        return True
+                if (
+                    isinstance(target, ast.Attribute)
+                    and target.attr in ("status_code", "status")
+                    and isinstance(node.value, ast.Constant)
+                    and node.value.value in _NOT_FOUND_STATUS_CODES
+                ):
+                    return True
     return False
 
 
@@ -151,9 +167,12 @@ def _has_not_found_hide_ast_single(node: ast.AST) -> bool:
     """单节点 404 检测（用于 raise 语句的 exc 子节点）。"""
     if isinstance(node, ast.Call):
         for kw in node.keywords:
-            if kw.arg in ("status_code", "status") and isinstance(kw.value, ast.Constant):
-                if kw.value.value in _NOT_FOUND_STATUS_CODES:
-                    return True
+            if (
+                kw.arg in ("status_code", "status")
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value in _NOT_FOUND_STATUS_CODES
+            ):
+                return True
         for arg in node.args:
             if isinstance(arg, ast.Constant) and arg.value in _NOT_FOUND_STATUS_CODES:
                 return True
@@ -166,7 +185,7 @@ def verify_python_patch(
     patch_code_snippet: str,
     primary_token: str,
     secondary_token: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     对补丁代码执行**纯静态**安全语义验证（不发起任何真实网络请求）。
 
@@ -186,7 +205,6 @@ def verify_python_patch(
     # 1. 语法合规性静态编译检查
     try:
         compile(patch_code_snippet, "<string>", "exec")
-        compiles = True
     except SyntaxError as e:
         return VerificationResult(
             patch_compiles=False,

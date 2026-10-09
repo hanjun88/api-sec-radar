@@ -1,9 +1,11 @@
 """tests/test_hook_signature.py — 签名 Hook 组 (A)"""
 from __future__ import annotations
+
 import time
-import uuid
+
 import pytest
-from src.auditor.hook import RequestHook, build_hook_chain, _build_signing_base, _compute_signature, NonceCache
+
+from src.auditor.hook import NonceCache, RequestHook, _build_signing_base, _compute_signature, build_hook_chain
 
 
 class TestSignatureRoundTrip:
@@ -124,9 +126,15 @@ class TestVerifySignatureEdgeCases:
         base = _build_signing_base("GET", "http://x", ts, nonce, None)
         sig = _compute_signature(secret, base)
         headers = {"X-Timestamp": ts, "X-Nonce": nonce, "X-Signature": sig}
-        r1 = RequestHook.verify_signature_with_details(headers=headers, method="GET", url="http://x", body=None, secret=secret, nonce_cache=cache)
+        r1 = RequestHook.verify_signature_with_details(
+            headers=headers, method="GET", url="http://x", body=None,
+            secret=secret, nonce_cache=cache,
+        )
         assert r1["valid"] is True
-        r2 = RequestHook.verify_signature_with_details(headers=headers, method="GET", url="http://x", body=None, secret=secret, nonce_cache=cache)
+        r2 = RequestHook.verify_signature_with_details(
+            headers=headers, method="GET", url="http://x", body=None,
+            secret=secret, nonce_cache=cache,
+        )
         assert r2["valid"] is False
         assert r2["reason"] == "nonce_replayed"
 

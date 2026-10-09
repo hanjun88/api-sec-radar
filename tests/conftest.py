@@ -12,16 +12,17 @@
 from __future__ import annotations
 
 import json
-import threading
-import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Dict, Generator, Optional
-
-import pytest
 
 # 项目根目录加入 sys.path 以便直接 import 被测包
 import os
 import sys
+import threading
+import time
+from collections.abc import Generator
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Any
+
+import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -55,19 +56,19 @@ def pytest_collection_modifyitems(config: Any, items: list) -> None:
 
 # ── 靶场数据 ─────────────────────────────────────────────────
 
-_MOCK_ACCOUNTS: Dict[str, Dict[str, Any]] = {
+_MOCK_ACCOUNTS: dict[str, dict[str, Any]] = {
     "1001": {"id": "1001", "owner": "alice", "balance": 50000.0, "ssn": "111-22-1001"},
     "1002": {"id": "1002", "owner": "bob", "balance": 120.0, "ssn": "222-33-1002"},
     "1003": {"id": "1003", "owner": "charlie", "balance": 9999.0, "ssn": "333-44-1003"},
 }
 
-_RATE_LIMIT_COUNTS: Dict[str, int] = {}
+_RATE_LIMIT_COUNTS: dict[str, int] = {}
 
 
 class _MockTargetHandler(BaseHTTPRequestHandler):
     """内置 BOLA/IDOR、越权写入、功能级越权、安全端点与限速端点的靶场。"""
 
-    def log_message(self, *args: Any) -> None:  # noqa: D401 - 静默访问日志
+    def log_message(self, *args: Any) -> None:
         """吞掉默认 stderr 访问日志，保持测试输出干净。"""
         return
 
@@ -78,7 +79,7 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
             return auth[len("Bearer "):]
         return ""
 
-    def _json(self, status: int, body: Dict[str, Any]) -> None:
+    def _json(self, status: int, body: dict[str, Any]) -> None:
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -87,7 +88,7 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     # ── GET ───────────────────────────────────────────────
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 命名约定
+    def do_GET(self) -> None:
         path = self.path.split("?")[0]
         token = self._bearer()
         if not token:
@@ -111,6 +112,9 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
         # 安全端点：仅属主 alice 可读，其余 403（正确拒绝）
         if path.startswith("/api/v1/secure/"):
             owner_id = path.rsplit("/", 1)[-1]
+            # sec-<id> 前缀映射到真实账户 id（保持端到端用例可读性）
+            if owner_id.startswith("sec-"):
+                owner_id = owner_id[len("sec-"):]
             record = _MOCK_ACCOUNTS.get(owner_id)
             if record is None:
                 self._json(404, {"error": "not found"})
@@ -142,7 +146,7 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     # ── PUT（越权写入）───────────────────────────────────
-    def do_PUT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 命名约定
+    def do_PUT(self) -> None:
         path = self.path.split("?")[0]
         token = self._bearer()
         if not token:
@@ -175,7 +179,7 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
 
 
 @pytest.fixture(scope="module")
-def mock_target_server() -> Generator[str, None, None]:
+def mock_target_server() -> Generator[str]:
     """启动本地漏洞靶场 HTTP server，返回基址 http://127.0.0.1:<port>。
 
     模块级共享：同一测试文件内所有用例复用，结束后自动 shutdown。
@@ -197,7 +201,7 @@ def mock_target_server() -> Generator[str, None, None]:
 @pytest.fixture(scope="session")
 def mock_openapi_spec() -> str:
     """返回包含 12 个端点的 OpenAPI 3.0 规范字符串。"""
-    spec: Dict[str, Any] = {
+    spec: dict[str, Any] = {
         "openapi": "3.0.0",
         "info": {"title": "Acme API", "version": "1.0.0"},
         "servers": [{"url": "http://target.local"}],
@@ -278,7 +282,7 @@ def mock_har_content() -> str:
 
 
 @pytest.fixture(scope="session")
-def sample_poc_report() -> Dict[str, Any]:
+def sample_poc_report() -> dict[str, Any]:
     """返回一个完整的 PoCReport dict。"""
     return {
         "poc_id": "POC-TEST000001",
@@ -317,7 +321,7 @@ def sample_poc_report() -> Dict[str, Any]:
 
 
 @pytest.fixture(scope="session")
-def sample_pipeline_result(sample_poc_report: Dict[str, Any]) -> Dict[str, Any]:
+def sample_pipeline_result(sample_poc_report: dict[str, Any]) -> dict[str, Any]:
     """返回一个完整的流水线结果 dict。"""
     return {
         "pipeline_id": "PIPE-TEST000001",
@@ -378,9 +382,9 @@ class MCPTestClient:
         )
         self._req_id = 0
 
-    def call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         self._req_id += 1
-        payload: Dict[str, Any] = {"jsonrpc": "2.0", "id": self._req_id, "method": method}
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "id": self._req_id, "method": method}
         if params is not None:
             payload["params"] = params
         assert self.proc.stdin is not None
@@ -393,15 +397,15 @@ class MCPTestClient:
             raise RuntimeError(f"MCP server exited: {self.proc.stderr.read()}")
         return json.loads(line)
 
-    def notify(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
-        payload: Dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             payload["params"] = params
         assert self.proc.stdin is not None
         self.proc.stdin.write(json.dumps(payload) + "\n")
         self.proc.stdin.flush()
 
-    def tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         raw = self.call("tools/call", {"name": name, "arguments": arguments})
         return json.loads(raw["result"]["content"][0]["text"])
 

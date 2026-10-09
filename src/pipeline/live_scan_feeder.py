@@ -12,8 +12,16 @@ import os
 import signal
 import subprocess
 import sys
-import time
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+# 路径引导（支持 `python3 src/pipeline/live_scan_feeder.py` 直接运行）
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from src.auditor.artifact_contract import (  # noqa: E402
+    build_artifact_from_scan_result,
+)
 
 try:
     import websockets
@@ -23,7 +31,8 @@ except ImportError:
 
 WS_BRIDGE_URL = os.environ.get("WS_SERVER_URL", "ws://127.0.0.1:8765")
 AUDITOR_MODULE = os.environ.get("AUDITOR_MODULE", "src.auditor.auditor_mcp_server")
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# MCP 子进程必须以仓库根目录为 cwd，`python -m src.auditor...` 才能解析 src 包
+PROJECT_ROOT = _PROJECT_ROOT
 SCAN_INTERVAL_SEC = float(os.environ.get("SCAN_INTERVAL_SEC", "5.0"))
 
 DEFAULT_OPENAPI_SPEC = {
@@ -68,7 +77,7 @@ class MCPClient:
     def __init__(self, module: str = AUDITOR_MODULE, cwd: str = PROJECT_ROOT):
         self.module = module
         self.cwd = cwd
-        self.process: Optional[subprocess.Popen] = None
+        self.process: subprocess.Popen | None = None
         self._req_id = 0
         self._initialized = False
 
@@ -86,11 +95,11 @@ class MCPClient:
             env=env,
         )
 
-    def _send_request(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def _send_request(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.process:
             raise RuntimeError("MCP process not started")
         self._req_id += 1
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": self._req_id,
             "method": method,
@@ -107,16 +116,16 @@ class MCPClient:
             raise RuntimeError(f"MCP process exited. stderr: {stderr}")
         return json.loads(response_line)
 
-    def _send_notification(self, method: str, params: Optional[Dict[str, Any]] = None) -> None:
+    def _send_notification(self, method: str, params: dict[str, Any] | None = None) -> None:
         if not self.process:
             return
-        payload: Dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+        payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             payload["params"] = params
         self.process.stdin.write(json.dumps(payload) + "\n")
         self.process.stdin.flush()
 
-    def initialize(self) -> Dict[str, Any]:
+    def initialize(self) -> dict[str, Any]:
         result = self._send_request(
             "initialize",
             {
@@ -129,12 +138,12 @@ class MCPClient:
         self._initialized = True
         return result
 
-    def list_tools(self) -> List[str]:
+    def list_tools(self) -> list[str]:
         result = self._send_request("tools/list")
         tools = result.get("result", {}).get("tools", [])
         return [t["name"] for t in tools]
 
-    def call_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         result = self._send_request(
             "tools/call",
             {"name": name, "arguments": arguments},
@@ -158,57 +167,13 @@ class MCPClient:
         self._initialized = False
 
 
-def normalize_verdict(raw: str) -> str:
-    """将审计引擎的原始判定映射为前端三态枚举。"""
-    upper = raw.upper()
-    if "VULN" in upper or "BOLA" in upper or "BROKEN" in upper:
-        return "VULNERABLE"
-    if "BLOCK" in upper or "SAFE_GUARD" in upper or "INVARIANT" in upper:
-        return "BLOCKED"
-    if "SAFE" in upper or "SECURE" in upper or "OK" in upper:
-        return "SAFE"
-    return "INCONCLUSIVE"
-
-
-def build_artifact_from_scan_result(scan_item: Dict[str, Any]) -> Dict[str, Any]:
-    """将 batch_differential_scan 的单条结果转换为 VulnEvidencePayload。"""
-    endpoint = scan_item.get("endpoint", scan_item.get("url", "UNKNOWN"))
-    verdict_raw = scan_item.get("verdict", scan_item.get("vulnerability_detected", "UNKNOWN"))
-    if isinstance(verdict_raw, bool):
-        verdict_raw = "VULNERABLE" if verdict_raw else "SAFE"
-    verdict = normalize_verdict(str(verdict_raw))
-
-    evidence = scan_item.get("evidence", {})
-    if not isinstance(evidence, dict):
-        evidence = {}
-
-    return {
-        "endpoint": endpoint,
-        "verdict": verdict,
-        "confidence": float(scan_item.get("confidence_score", scan_item.get("confidence", 0.8))),
-        "evidence": {
-            "primary_status": int(evidence.get("primary_status", scan_item.get("primary_status", 0))),
-            "secondary_status": int(evidence.get("secondary_status", scan_item.get("secondary_status", 0))),
-            "response_similarity": float(
-                evidence.get("response_similarity", scan_item.get("response_similarity", 0.0))
-            ),
-            "elapsed_ms": int(evidence.get("elapsed_ms", scan_item.get("elapsed_ms", 0))),
-            "timestamp": int(time.time() * 1000),
-        },
-        "technical_root_cause": scan_item.get(
-            "root_cause_analysis",
-            scan_item.get("technical_root_cause", "Differential access scan completed."),
-        ),
-    }
-
-
 class LiveScanFeeder:
     """真实扫描驱动的工件推流器：MCP 审计 → WebSocket 广播。"""
 
     def __init__(
         self,
         ws_url: str = WS_BRIDGE_URL,
-        openapi_spec: Optional[Dict[str, Any]] = None,
+        openapi_spec: dict[str, Any] | None = None,
         scan_interval_sec: float = SCAN_INTERVAL_SEC,
         primary_token: str = "Bearer token-alice",
         secondary_token: str = "Bearer token-bob",
@@ -221,12 +186,12 @@ class LiveScanFeeder:
         self.running = True
         self.scan_count = 0
         self.artifact_count = 0
-        self.mcp: Optional[MCPClient] = None
+        self.mcp: MCPClient | None = None
 
     def stop(self) -> None:
         self.running = False
 
-    async def _push_via_websocket(self, artifacts: List[Dict[str, Any]]) -> None:
+    async def _push_via_websocket(self, artifacts: list[dict[str, Any]]) -> None:
         try:
             async with websockets.connect(self.ws_url) as ws:
                 for artifact in artifacts:
@@ -240,7 +205,7 @@ class LiveScanFeeder:
         except Exception as e:
             print(f"[LIVE] WebSocket 推送异常: {e}", file=sys.stderr)
 
-    def _run_single_scan_cycle(self) -> List[Dict[str, Any]]:
+    def _run_single_scan_cycle(self) -> list[dict[str, Any]]:
         """执行一次完整的 ingest_openapi → batch_differential_scan 循环。"""
         if not self.mcp:
             return []
@@ -248,13 +213,18 @@ class LiveScanFeeder:
         self.scan_count += 1
         print(f"\n[SCAN] === 第 {self.scan_count} 轮真实差分扫描 ===")
 
-        # Phase 1: 白盒契约摄入
+        # Phase 1: 白盒契约摄入（身份头以 JSON 字符串入参，对齐 MCP 工具签名）
         try:
             ingest_result = self.mcp.call_tool(
                 "ingest_openapi",
                 {
                     "spec_content_or_path": json.dumps(self.openapi_spec),
-                    "secondary_headers": {"Authorization": self.secondary_token},
+                    "primary_headers_json": json.dumps(
+                        {"Authorization": self.primary_token}
+                    ),
+                    "secondary_headers_json": json.dumps(
+                        {"Authorization": self.secondary_token}
+                    ),
                 },
             )
             target_matrix = ingest_result if isinstance(ingest_result, list) else ingest_result.get(
@@ -284,13 +254,14 @@ class LiveScanFeeder:
             print(f"[SCAN] batch_differential_scan 失败: {e}", file=sys.stderr)
             return []
 
-        # Phase 3: 解析扫描结果
-        results: List[Dict[str, Any]] = []
+        # Phase 3: 解析扫描结果（run_batch_scan 契约：all_results）
+        results: list[dict[str, Any]] = []
         if isinstance(scan_result, list):
             results = scan_result
         elif isinstance(scan_result, dict):
             results = (
-                scan_result.get("results")
+                scan_result.get("all_results")
+                or scan_result.get("results")
                 or scan_result.get("scan_results")
                 or scan_result.get("vulnerabilities")
                 or []

@@ -1,7 +1,7 @@
 """tests/test_safety_adversarial.py — 对抗检测组 (C)"""
 from __future__ import annotations
-import pytest
-from src.auditor.adversarial_guard import BypassDetector, validate_request_security
+
+from src.auditor.adversarial_guard import BypassDetector
 
 
 class TestBypassDetector:

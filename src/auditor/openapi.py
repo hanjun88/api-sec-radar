@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urljoin
 
 from pydantic import BaseModel
@@ -35,18 +35,18 @@ class OpenAPITargetEntry(BaseModel):
     method: str
     url: str
     path_template: str
-    primary_headers: Dict[str, str]
-    secondary_headers: Dict[str, str]
-    json_body: Optional[str] = None
+    primary_headers: dict[str, str]
+    secondary_headers: dict[str, str]
+    json_body: str | None = None
     is_auditable: bool
     is_safe_method: bool
 
 
-def _extract_base_url(spec: Dict[str, Any], override: Optional[str]) -> str:
+def _extract_base_url(spec: dict[str, Any], override: str | None) -> str:
     """从 OpenAPI 3.x servers 或 Swagger 2.0 host/schemes/basePath 提取 base URL。"""
     if override:
         return override.rstrip("/")
-    if "servers" in spec and spec["servers"]:
+    if spec.get("servers"):
         return spec["servers"][0].get("url", "").rstrip("/")
     if "host" in spec:
         schemes = spec.get("schemes", ["https"])
@@ -56,8 +56,8 @@ def _extract_base_url(spec: Dict[str, Any], override: Optional[str]) -> str:
 
 
 def _generate_mock_body(
-    op_spec: Dict[str, Any], method: str, mock_id_value: str
-) -> Optional[str]:
+    op_spec: dict[str, Any], method: str, mock_id_value: str
+) -> str | None:
     """从 requestBody 生成最小 mock body；无 requestBody 时对写操作生成默认探针。"""
     if method not in {"POST", "PUT", "PATCH"}:
         return None
@@ -66,17 +66,17 @@ def _generate_mock_body(
     request_body = op_spec.get("requestBody")
     if request_body:
         content = request_body.get("content", {})
-        for content_type, media_type in content.items():
+        for media_type in content.values():
             if "example" in media_type:
                 return json.dumps(media_type["example"])
-            if "examples" in media_type and media_type["examples"]:
+            if media_type.get("examples"):
                 first_key = next(iter(media_type["examples"]))
                 ex = media_type["examples"][first_key]
                 if isinstance(ex, dict) and "value" in ex:
                     return json.dumps(ex["value"])
             schema = media_type.get("schema", {})
             if "properties" in schema:
-                mock: Dict[str, Any] = {}
+                mock: dict[str, Any] = {}
                 for prop_name, prop_spec in schema["properties"].items():
                     if "example" in prop_spec:
                         mock[prop_name] = prop_spec["example"]
@@ -95,11 +95,11 @@ def _generate_mock_body(
 
 def parse_openapi_spec(
     spec_content_or_path: str,
-    base_url_override: Optional[str] = None,
-    secondary_headers: Optional[Dict[str, str]] = None,
-    primary_headers: Optional[Dict[str, str]] = None,
+    base_url_override: str | None = None,
+    secondary_headers: dict[str, str] | None = None,
+    primary_headers: dict[str, str] | None = None,
     mock_id_value: str = "1001",
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     解析 OpenAPI 3.0 或 Swagger 2.0 文档，输出标准化待测矩阵。
 
@@ -118,14 +118,14 @@ def parse_openapi_spec(
     if stripped.startswith("{") or stripped.startswith("["):
         spec = json.loads(stripped)
     else:
-        with open(spec_content_or_path, "r", encoding="utf-8") as f:
+        with open(spec_content_or_path, encoding="utf-8") as f:
             spec = json.load(f)
 
     # 2. 提取 Base URL
     server_url = _extract_base_url(spec, base_url_override)
 
-    target_matrix: List[Dict[str, Any]] = []
-    paths: Dict[str, Any] = spec.get("paths", {})
+    target_matrix: list[dict[str, Any]] = []
+    paths: dict[str, Any] = spec.get("paths", {})
 
     # 3. 遍历接口定义
     for path_str, path_item in paths.items():
@@ -182,11 +182,11 @@ def parse_openapi_spec(
     return target_matrix
 
 
-def filter_auditable(matrix: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def filter_auditable(matrix: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """过滤出包含对象级引用参数的待测条目（BOLA/IDOR 高风险面）。"""
     return [e for e in matrix if e.get("is_auditable", False)]
 
 
-def filter_safe_methods(matrix: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def filter_safe_methods(matrix: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """过滤出只读方法（GET/HEAD/OPTIONS），可安全批量重放。"""
     return [e for e in matrix if e.get("is_safe_method", False)]

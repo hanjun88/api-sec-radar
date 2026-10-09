@@ -12,7 +12,7 @@ import random
 import signal
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 try:
     import websockets
@@ -21,7 +21,7 @@ except ImportError:
     sys.exit(1)
 
 TARGET_WS_URL = os.environ.get("WS_SERVER_URL", "ws://127.0.0.1:8765")
-ENDPOINTS: List[str] = [
+ENDPOINTS: list[str] = [
     "GET /api/v1/users/{id}",
     "GET /api/v1/orders/{id}",
     "GET /api/v1/accounts/{id}",
@@ -40,14 +40,14 @@ ENDPOINTS: List[str] = [
     "DELETE /api/v1/devices/{id}",
 ]
 
-ROOT_CAUSES: Dict[str, str] = {
+ROOT_CAUSES: dict[str, str] = {
     "VULNERABLE": "BOLA: Object-level reference parameter traversed without caller tenant boundary check.",
     "SAFE": "Authorization passed: Row-level security filter and principal ownership enforced.",
     "BLOCKED": "P0-INVARIANT-03: Non-idempotent write operation halted by safety circuit breaker.",
 }
 
 
-def build_synthetic_artifact() -> Dict[str, Any]:
+def build_synthetic_artifact() -> dict[str, Any]:
     endpoint = random.choice(ENDPOINTS)
     roll = random.random()
 
@@ -96,7 +96,7 @@ class StreamFeeder:
         while self.running:
             try:
                 async with websockets.connect(self.uri) as ws:
-                    print(f"[FEEDER] WebSocket 链路已建立，开始注入测试工件流...")
+                    print("[FEEDER] WebSocket 链路已建立，开始注入测试工件流...")
                     while self.running:
                         artifact = build_synthetic_artifact()
                         payload = json.dumps(artifact)

@@ -1,7 +1,10 @@
-websockets>=12.0
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
-requests>=2.31.0
-mcp>=1.0.0
-pydantic>=2.0.0
-httpx>=0.25.0
+# API Security Radar — Python 运行时依赖（2026-10 推演锁定）
+httpx>=0.28.1
+websockets>=16.1.1
+mcp>=2.3.0
+pydantic>=2.14.0
+requests>=2.34.2
+
+# ── 测试与工程门禁 ──
+pytest>=9.1.1
+pytest-asyncio>=1.4.0

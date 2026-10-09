@@ -1,10 +1,12 @@
 """tests/test_report_emitter.py — 报告落盘组 (E)"""
 from __future__ import annotations
-import os
+
 import json
-import tempfile
-import shutil
+import os
 import re
+import shutil
+import tempfile
+
 from src.auditor.report_emitter import emit_audit_report
 
 
@@ -42,7 +44,8 @@ class TestEmitAuditReport:
             {"endpoint": "GET /api/v1/health", "verdict": "SAFE"},
         ]
         result = emit_audit_report(scan_results=scan_results, output_dir=self.temp_dir)
-        doc = json.load(open(result["json_path"], encoding="utf-8"))
+        with open(result["json_path"], encoding="utf-8") as f:
+            doc = json.load(f)
         assert "verdict_distribution" in doc
         assert doc["verdict_distribution"]["VULNERABLE"] == 1
         assert doc["verdict_distribution"]["SAFE"] == 1
@@ -52,7 +55,8 @@ class TestEmitAuditReport:
             {"endpoint": "GET /api/v1/users/1001", "verdict": "VULNERABLE", "confidence": 0.95},
         ]
         result = emit_audit_report(scan_results=scan_results, output_dir=self.temp_dir)
-        md = open(result["markdown_path"], encoding="utf-8").read()
+        with open(result["markdown_path"], encoding="utf-8") as f:
+            md = f.read()
         assert "VULNERABLE" in md
         assert "SAFE" in md
 
@@ -65,5 +69,6 @@ class TestEmitAuditReport:
     def test_empty_results_still_emits(self):
         result = emit_audit_report(scan_results=[], output_dir=self.temp_dir)
         assert result["status"] == "DELIVERED"
-        md = open(result["markdown_path"], encoding="utf-8").read()
+        with open(result["markdown_path"], encoding="utf-8") as f:
+            md = f.read()
         assert len(md) > 0

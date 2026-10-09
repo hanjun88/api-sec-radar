@@ -1,9 +1,9 @@
 """tests/test_mock_target.py — Mock 靶机组 (F)"""
 from __future__ import annotations
+
 import json
-import urllib.request
 import urllib.error
-import pytest
+import urllib.request
 
 
 def _get(base_url: str, path: str, token: str | None = None) -> tuple[int, dict]:

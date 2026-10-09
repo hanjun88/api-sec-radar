@@ -1,0 +1,29 @@
+[tool.ruff]
+# API Security Radar — 显式 lint 契约（2026-10 推演锁定）
+# 交付运行时：Python 3.14（CI backend-gate 与 Dockerfile.pipeline 同步）
+# 兼容性地板：3.10（ruff 不做 3.11+ 专属语法改写，保证多解释器可运行）
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "UP",   # pyupgrade（PEP 585/604 现代注解）
+    "RUF",  # Ruff 专属规则
+]
+ignore = [
+    # 测试中断言式解包（ok, reason, _ = ...）中未使用的变量是惯用写法
+    "RUF059",
+    # 本仓库为中文注释/文档代码库：CJK 与全角标点属正常内容，不应视为歧义 Unicode
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]

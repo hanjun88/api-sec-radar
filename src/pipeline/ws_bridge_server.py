@@ -11,7 +11,6 @@ import json
 import os
 import signal
 import sys
-from typing import Any, Dict, Set
 
 try:
     import websockets
@@ -27,7 +26,7 @@ class BridgeServer:
     def __init__(self, host: str = WS_HOST, port: int = WS_PORT):
         self.host = host
         self.port = port
-        self.clients: Set[websockets.WebSocketServerProtocol] = set()
+        self.clients: set[websockets.WebSocketServerProtocol] = set()
         self.running = True
         self.received_count = 0
         self.broadcast_count = 0
@@ -79,7 +78,7 @@ class BridgeServer:
 
     async def start(self) -> None:
         print(f"[BRIDGE] WebSocket 网关启动: ws://{self.host}:{self.port}")
-        print(f"[BRIDGE] 等待上游推流与前端客户端接入...")
+        print("[BRIDGE] 等待上游推流与前端客户端接入...")
         async with websockets.serve(self.handler, self.host, self.port):
             self.server = True
             while self.running:

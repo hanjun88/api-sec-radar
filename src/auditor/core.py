@@ -17,10 +17,9 @@ import hashlib
 import json
 import logging
 import threading
-import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
@@ -28,19 +27,18 @@ from pydantic import BaseModel, Field, field_validator
 
 from .safety import validate_method_safety
 
-
 logger = logging.getLogger(__name__)
 
 
 # ── 模块级共享 httpx 连接池（线程安全单例）──────────────────
-_shared_client: Optional[httpx.Client] = None
+_shared_client: httpx.Client | None = None
 _client_lock = threading.Lock()
 
 _BODY_SIM_MAX_BYTES = 100 * 1024  # 100KB，超过则截断后再算相似度
 _FLATTEN_MAX_DEPTH = 10  # 防止恶意深层 JSON 递归导致栈溢出
 
 # 连接池可配置参数（运行时可通过 configure_shared_client 调整）
-_pool_config: Dict[str, float] = {
+_pool_config: dict[str, float] = {
     "max_connections": 100,
     "max_keepalive_connections": 50,
     "keepalive_expiry": 30.0,
@@ -71,9 +69,9 @@ def _record_request_end() -> None:
 
 
 def configure_shared_client(
-    max_connections: Optional[int] = None,
-    max_keepalive: Optional[int] = None,
-    timeout: Optional[float] = None,
+    max_connections: int | None = None,
+    max_keepalive: int | None = None,
+    timeout: float | None = None,
 ) -> None:
     """运行时调优共享连接池参数。
 
@@ -95,7 +93,7 @@ def configure_shared_client(
     close_shared_client()
 
 
-def get_pool_stats() -> Dict[str, Any]:
+def get_pool_stats() -> dict[str, Any]:
     """返回共享连接池监控指标。
 
     Returns:
@@ -155,12 +153,12 @@ def execute_with_timeout(func: Callable[..., Any], timeout_seconds: float) -> An
         TimeoutError: 超过 timeout_seconds 仍未完成。
         Exception: func 执行过程中抛出的原始异常。
     """
-    result_box: Dict[str, Any] = {}
+    result_box: dict[str, Any] = {}
 
     def _runner() -> None:
         try:
             result_box["value"] = func()
-        except BaseException as exc:  # noqa: BLE001 - 需要原样回传
+        except BaseException as exc:
             result_box["error"] = exc
 
     worker = threading.Thread(target=_runner, daemon=True)
@@ -217,8 +215,8 @@ class RequestIdentity(BaseModel):
     label: str = Field(description="身份标签，如 'victim' / 'attacker' / 'user_a'")
     method: str = Field(default="GET", description="HTTP 方法")
     url: str = Field(description="目标端点 URL")
-    headers: Dict[str, str] = Field(default_factory=dict)
-    body: Optional[str] = Field(default=None, description="请求体（JSON 字符串或原始文本）")
+    headers: dict[str, str] = Field(default_factory=dict)
+    body: str | None = Field(default=None, description="请求体（JSON 字符串或原始文本）")
     timeout: float = Field(default=10.0, ge=0.5, le=60.0)
 
     @field_validator("method")
@@ -268,7 +266,7 @@ class DifferentialTestOutput(BaseModel):
     similarity: float = Field(ge=0.0, le=1.0, description="响应体结构化相似度")
     primary: ResponseFingerprint
     secondary: ResponseFingerprint
-    evidence: Dict[str, Any] = Field(description="判定依据的结构化证据")
+    evidence: dict[str, Any] = Field(description="判定依据的结构化证据")
 
 
 # ── 相似度计算 ───────────────────────────────────────────────
@@ -316,7 +314,7 @@ def _body_similarity(a: str, b: str) -> float:
 # JSON key 集合缓存：body 摘要 -> 扁平 key/token 集合
 # 限制最大条目数，防止长时间运行内存无限增长
 _TOKEN_SET_CACHE_MAX = 4096
-_token_set_cache: "OrderedDict[str, set[str]]" = OrderedDict()  # noqa: F821
+_token_set_cache: OrderedDict[str, set[str]] = OrderedDict()
 _token_set_lock = threading.Lock()
 
 
@@ -353,7 +351,7 @@ _DYNAMIC_FIELDS = {
 
 def _flatten_keys(
     obj: Any, prefix: str = "", depth: int = 0
-) -> List[str]:
+) -> list[str]:
     """
     递归展平 JSON 对象的 key 路径。
 
@@ -365,7 +363,7 @@ def _flatten_keys(
     """
     if depth > _FLATTEN_MAX_DEPTH:
         return []
-    keys: List[str] = []
+    keys: list[str] = []
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k in _DYNAMIC_FIELDS:
@@ -395,7 +393,7 @@ class ApiAccessAuditor:
     version = "1.0.0"
 
     def __init__(self) -> None:
-        self._client: Optional[httpx.Client] = None
+        self._client: httpx.Client | None = None
 
     def validate_inputs(self, params: DifferentialTestInput) -> None:
         """入参硬约束，违规立即 raise ValueError。"""

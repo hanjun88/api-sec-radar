@@ -1,7 +1,7 @@
 """tests/test_pipeline_contract.py — 流水线契约组 (D)"""
 from __future__ import annotations
+
 import json
-import pytest
 
 
 class TestPipelineResultContract:

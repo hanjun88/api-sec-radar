@@ -1,8 +1,8 @@
 """tests/test_safety_gate.py — 写熔断门禁组 (B)"""
 from __future__ import annotations
-import pytest
-from src.auditor.safety import validate_method_safety, SAFE_HTTP_METHODS
+
 from src.auditor.adversarial_guard import validate_request_security
+from src.auditor.safety import SAFE_HTTP_METHODS, validate_method_safety
 
 
 class TestValidateMethodSafety:

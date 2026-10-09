@@ -19,9 +19,8 @@ import hmac
 import threading
 import time
 import uuid
-from typing import Callable, Dict, Optional, Tuple
+from collections.abc import Callable
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlparse
-
 
 # ---------------------------------------------------------------------------
 # 签名规范化工具
@@ -44,7 +43,7 @@ def _canonical_query(query: str) -> str:
     return urlencode(sorted(parse_qsl(query or "")), doseq=True)
 
 
-def _body_hash(body: Optional[str]) -> str:
+def _body_hash(body: str | None) -> str:
     """
     计算 body 的 SHA-256 摘要（hex）。body 为空时返回空串，
     保证「无 body」与「空 body」签名基串一致。
@@ -59,7 +58,7 @@ def _build_signing_base(
     url: str,
     timestamp: str,
     nonce: str,
-    body: Optional[str],
+    body: str | None,
 ) -> str:
     """
     构造签名基串：``METHOD|norm_path|canon_query|ts|nonce|body_sha256``。
@@ -121,7 +120,7 @@ class NonceCache:
             raise ValueError("ttl_seconds 必须为正数")
         self.ttl_seconds = ttl_seconds
         self._lock = threading.RLock()
-        self._seen: Dict[str, float] = {}
+        self._seen: dict[str, float] = {}
 
     def _prune(self, now: float) -> None:
         """淘汰过期 nonce（调用方持锁）。"""
@@ -166,16 +165,21 @@ class RequestHook:
     _default_nonce_cache = NonceCache(ttl_seconds=300)
 
     @staticmethod
+    def verify_timestamp(ts: str, max_skew_seconds: int = 300) -> bool:
+        """时间戳容差验证（实例/类访问入口，等价于模块级 ``verify_timestamp``）。"""
+        return verify_timestamp(ts, max_skew_seconds)
+
+    @staticmethod
     def apply_standard_auth(
-        headers: Dict[str, str],
+        headers: dict[str, str],
         method: str,
         url: str,
-        body: Optional[str] = None,
-        secret: Optional[str] = None,
+        body: str | None = None,
+        secret: str | None = None,
         timestamp_header: str = "X-Timestamp",
         nonce_header: str = "X-Nonce",
         signature_header: str = "X-Signature",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """
         常见企业网关签名补齐：动态写入 Timestamp、Nonce 及可选 HMAC-SHA256。
 
@@ -200,17 +204,17 @@ class RequestHook:
 
     @staticmethod
     def verify_signature_with_details(
-        headers: Dict[str, str],
+        headers: dict[str, str],
         method: str,
         url: str,
-        body: Optional[str] = None,
-        secret: Optional[str] = None,
+        body: str | None = None,
+        secret: str | None = None,
         timestamp_header: str = "X-Timestamp",
         nonce_header: str = "X-Nonce",
         signature_header: str = "X-Signature",
         max_skew_seconds: int = 300,
-        nonce_cache: Optional[NonceCache] = None,
-    ) -> Dict[str, object]:
+        nonce_cache: NonceCache | None = None,
+    ) -> dict[str, object]:
         """
         校验收到的请求签名是否合法，并返回详细失败原因。
 
@@ -253,16 +257,16 @@ class RequestHook:
 
     @staticmethod
     def verify_signature(
-        headers: Dict[str, str],
+        headers: dict[str, str],
         method: str,
         url: str,
-        body: Optional[str] = None,
-        secret: Optional[str] = None,
+        body: str | None = None,
+        secret: str | None = None,
         timestamp_header: str = "X-Timestamp",
         nonce_header: str = "X-Nonce",
         signature_header: str = "X-Signature",
         max_skew_seconds: int = 300,
-        nonce_cache: Optional[NonceCache] = None,
+        nonce_cache: NonceCache | None = None,
     ) -> bool:
         """
         校验收到的请求签名是否合法（便捷布尔包装）。
@@ -300,10 +304,10 @@ class RequestHook:
 
     @staticmethod
     def apply_bearer_token(
-        headers: Dict[str, str],
+        headers: dict[str, str],
         token: str,
         header_name: str = "Authorization",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """注入 Bearer Token。"""
         updated = dict(headers)
         updated[header_name] = f"Bearer {token}"
@@ -311,10 +315,10 @@ class RequestHook:
 
     @staticmethod
     def apply_api_key(
-        headers: Dict[str, str],
+        headers: dict[str, str],
         api_key: str,
         header_name: str = "X-API-Key",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """注入 API Key。"""
         updated = dict(headers)
         updated[header_name] = api_key
@@ -322,9 +326,9 @@ class RequestHook:
 
     @staticmethod
     def apply_content_type(
-        headers: Dict[str, str],
+        headers: dict[str, str],
         content_type: str = "application/json",
-    ) -> Dict[str, str]:
+    ) -> dict[str, str]:
         """确保 Content-Type 存在。"""
         updated = dict(headers)
         if "content-type" not in {k.lower() for k in updated}:
@@ -333,9 +337,9 @@ class RequestHook:
 
     @staticmethod
     def compose(
-        headers: Dict[str, str],
-        hooks: list[Callable[[Dict[str, str]], Dict[str, str]]],
-    ) -> Dict[str, str]:
+        headers: dict[str, str],
+        hooks: list[Callable[[dict[str, str]], dict[str, str]]],
+    ) -> dict[str, str]:
         """
         组合多个 Hook 顺序执行。
         每个 Hook 接收当前 headers，返回新 headers。
@@ -349,26 +353,26 @@ class RequestHook:
 def build_hook_chain(
     method: str,
     url: str,
-    body: Optional[str] = None,
-    secret: Optional[str] = None,
-    primary_token: Optional[str] = None,
-    secondary_token: Optional[str] = None,
-) -> Tuple[Dict[str, str], Dict[str, str]]:
+    body: str | None = None,
+    secret: str | None = None,
+    primary_token: str | None = None,
+    secondary_token: str | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
     """
     构建 primary / secondary 双身份的 Hook 链。
     返回 (primary_headers, secondary_headers)。
     """
-    base: Dict[str, str] = {}
+    base: dict[str, str] = {}
 
-    def _with_signature(h: Dict[str, str]) -> Dict[str, str]:
+    def _with_signature(h: dict[str, str]) -> dict[str, str]:
         return RequestHook.apply_standard_auth(h, method, url, body, secret)
 
-    def _with_primary_token(h: Dict[str, str]) -> Dict[str, str]:
+    def _with_primary_token(h: dict[str, str]) -> dict[str, str]:
         if primary_token:
             return RequestHook.apply_bearer_token(h, primary_token)
         return h
 
-    def _with_secondary_token(h: Dict[str, str]) -> Dict[str, str]:
+    def _with_secondary_token(h: dict[str, str]) -> dict[str, str]:
         if secondary_token:
             return RequestHook.apply_bearer_token(h, secondary_token)
         return h

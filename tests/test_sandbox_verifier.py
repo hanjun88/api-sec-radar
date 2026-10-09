@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from src.auditor.sandbox_verifier import verify_python_patch
 
-
 _GOOD_PATCH = '''
 def handler(account, current_user):
     if account.owner_id != current_user.user_id:

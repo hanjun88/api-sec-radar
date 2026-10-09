@@ -3,31 +3,44 @@ api_access_auditor/server.py — MCP 服务入口
 
 启动: python -m api_access_auditor.server
 传输: stdio
+
+工具面（MCP Python SDK v2 MCPServer）：
+- differential_access_test / probe_endpoint: 单端点差分审计
+- ingest_openapi: OpenAPI/Swagger 契约摄入（白盒通道）
+- batch_differential_scan(_fast): 批量差分扫描
+- emit_audit_report: 扫描结果落盘（Markdown + JSON）
+- run_full_pipeline: 全链路自动化审计（摄入→扫描→PoC→赏金→报告→推流）
+- verify_remediation: 修复补丁静态 AST 验证
 """
 
 from __future__ import annotations
 
 import json
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
+from .batch_scan import run_batch_scan
 from .core import (
     ApiAccessAuditor,
     DifferentialTestInput,
     RequestIdentity,
 )
-from .hook import RequestHook, build_hook_chain
-from .openapi import parse_openapi_spec, filter_auditable, filter_safe_methods
+from .openapi import filter_auditable, filter_safe_methods, parse_openapi_spec
+from .pipeline_orchestrator import (
+    PipelineConfig,
+    PipelineSource,
+    run_pipeline,
+)
+from .report_emitter import emit_audit_report as emit_report
 from .sandbox_verifier import verify_python_patch
+from .scope import ScopePolicy
 
-mcp = FastMCP("api-access-auditor")
+mcp = MCPServer("api-access-auditor")
 _auditor = ApiAccessAuditor()
 
 
-def _coerce_headers(raw: Union[str, Dict[str, str], None]) -> Dict[str, str]:
+def _coerce_headers(raw: str | dict[str, str] | None) -> dict[str, str]:
     """兼容 dict 或 JSON string 两种 headers 入参。"""
     if raw is None:
         return {}
@@ -42,15 +55,15 @@ def _coerce_headers(raw: Union[str, Dict[str, str], None]) -> Dict[str, str]:
 def differential_access_test(
     url: str,
     method: str = "GET",
-    primary_headers: Optional[Union[str, Dict[str, str]]] = None,
-    secondary_headers: Optional[Union[str, Dict[str, str]]] = None,
+    primary_headers: str | dict[str, str] | None = None,
+    secondary_headers: str | dict[str, str] | None = None,
     primary_label: str = "primary",
     secondary_label: str = "secondary",
     primary_body: str = "",
     secondary_body: str = "",
     similarity_threshold: float = 0.85,
     allow_write: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     API 访问控制差分测试。
     对同一端点发送两个不同身份的请求，对比状态码与响应体相似度，
@@ -94,9 +107,9 @@ def differential_access_test(
 def probe_endpoint(
     url: str,
     method: str = "GET",
-    headers: Optional[Union[str, Dict[str, str]]] = None,
+    headers: str | dict[str, str] | None = None,
     timeout: float = 10.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     端点探测：发送单次请求，返回状态码、响应指纹与耗时。
     """
@@ -134,7 +147,7 @@ def ingest_openapi(
     mock_id_value: str = "1001",
     only_auditable: bool = False,
     only_safe_methods: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     摄入 OpenAPI 3.0 / Swagger 2.0 规范文档，输出标准化待测矩阵。
     白盒契约文档通道，与 HAR 黑盒流量通道同构，下游可直接批量差分扫描。
@@ -176,231 +189,9 @@ def ingest_openapi(
     }
 
 
-def _execute_single_entry(
-    entry: Dict[str, Any],
-    allow_write: bool,
-    secret: Optional[str],
-    primary_token: Optional[str],
-    secondary_token: Optional[str],
-    similarity_threshold: float,
-    interval: float = 0.0,
-    fast_mode: bool = False,
-    timeout_per_request: float = 10.0,
-) -> Dict[str, Any]:
-    """执行单条待测矩阵条目的差分测试。线程安全：每个调用创建独立 auditor 实例。
-
-    Args:
-        entry: 待测矩阵条目。
-        allow_write: 是否放行写操作。
-        secret: 可选 HMAC 密钥。
-        primary_token: 可选主身份 token。
-        secondary_token: 可选次身份 token。
-        similarity_threshold: 越权判定阈值。
-        interval: 本 worker 开始前的限速 sleep 秒数（在 worker 内部 sleep，
-            不阻塞主线程的任务提交循环）。
-        fast_mode: 快速模式：跳过非 auditable 端点的详细证据收集，
-            仅保留 verdict 与关键状态码，用于大规模初步扫描。
-        timeout_per_request: 单请求超时（秒），透传给 RequestIdentity。
-    """
-    # 限速下沉到 worker 线程内，避免阻塞主线程批量提交任务
-    if interval > 0:
-        time.sleep(interval)
-
-    method = entry.get("method", "GET").upper()
-    url = entry.get("url", "")
-    body = entry.get("json_body")
-
-    # 先合并矩阵中已有的静态 headers，再动态计算签名（动态头必须后应用，防止被静态覆盖）
-    primary_headers = dict(entry.get("primary_headers", {}))
-    secondary_headers = dict(entry.get("secondary_headers", {}))
-    dyn_p, dyn_s = build_hook_chain(
-        method=method,
-        url=url,
-        body=body,
-        secret=secret,
-        primary_token=primary_token,
-        secondary_token=secondary_token,
-    )
-    primary_headers.update(dyn_p)
-    secondary_headers.update(dyn_s)
-
-    auditor = ApiAccessAuditor()
-    try:
-        params = DifferentialTestInput(
-            primary=RequestIdentity(
-                label="primary", method=method, url=url,
-                headers=primary_headers, body=body, timeout=timeout_per_request,
-            ),
-            secondary=RequestIdentity(
-                label="secondary", method=method, url=url,
-                headers=secondary_headers, body=body, timeout=timeout_per_request,
-            ),
-            similarity_threshold=similarity_threshold,
-            allow_write=allow_write,
-        )
-        result = auditor.execute(params)
-        entry_result: Dict[str, Any] = {
-            "endpoint": f"{method} {entry.get('path_template', url)}",
-            "url": url,
-            "method": method,
-            "verdict": result.verdict,
-            "confidence": result.confidence,
-            "similarity": result.similarity,
-            "is_auditable": entry.get("is_auditable", False),
-            "is_safe_method": entry.get("is_safe_method", True),
-            "primary_status": result.primary.status_code,
-            "secondary_status": result.secondary.status_code,
-            "evidence": result.evidence,
-        }
-        # 快速模式：非 auditable 端点不收集详细证据
-        if fast_mode and not entry.get("is_auditable", False):
-            entry_result["evidence"] = {
-                "primary_status": result.primary.status_code,
-                "secondary_status": result.secondary.status_code,
-                "similarity": result.similarity,
-                "_fast_mode": True,
-            }
-        return entry_result
-    except Exception as e:
-        return {
-            "endpoint": f"{method} {entry.get('path_template', url)}",
-            "url": url,
-            "method": method,
-            "verdict": "ERROR",
-            "confidence": 0.0,
-            "similarity": 0.0,
-            "is_auditable": entry.get("is_auditable", False),
-            "is_safe_method": entry.get("is_safe_method", True),
-            "primary_status": 0,
-            "secondary_status": 0,
-            "evidence": {"error": str(e), "type": type(e).__name__},
-        }
-    finally:
-        auditor.cleanup()
-
-
-def _compress_batch_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """批量结果压缩：结果 > 100 条时，非 VULNERABLE 条目的 evidence 精简为
-    只保留 verdict 与关键状态码，控制返回负载与内存。
-    """
-    if len(results) <= 100:
-        return results
-    compressed: List[Dict[str, Any]] = []
-    for r in results:
-        if r.get("verdict") == "VULNERABLE":
-            compressed.append(r)
-            continue
-        slim = dict(r)
-        slim["evidence"] = {
-            "primary_status": r.get("primary_status", 0),
-            "secondary_status": r.get("secondary_status", 0),
-            "similarity": r.get("similarity", 0.0),
-            "_compressed": True,
-        }
-        compressed.append(slim)
-    return compressed
-
-
-def _batch_concurrency(max_concurrency: int, matrix_size: int) -> int:
-    """与 orchestrator 对齐的分级并发度（上限 10）。
-
-    - 矩阵 ≤ 100：使用请求的 max_concurrency
-    - 100 < 矩阵 ≤ 500：min(max_concurrency, 5)
-    - 500 < 矩阵 ≤ 2000：min(max_concurrency, 8)
-    - 矩阵 > 2000：min(max_concurrency, 10)
-    """
-    if matrix_size <= 100:
-        return max(1, min(int(max_concurrency), 10))
-    if matrix_size <= 500:
-        return max(1, min(int(max_concurrency), 5))
-    if matrix_size <= 2000:
-        return max(1, min(int(max_concurrency), 8))
-    return max(1, min(int(max_concurrency), 10))
-
-
-def _run_batch_scan(
-    target_matrix: List[Dict[str, Any]],
-    max_concurrency: int,
-    interval_ms: int,
-    allow_write: bool,
-    secret_key: str,
-    primary_token: str,
-    secondary_token: str,
-    similarity_threshold: float,
-    fast_mode: bool = False,
-    timeout_per_request: float = 10.0,
-) -> Dict[str, Any]:
-    """批量差分扫描的共享实现。
-
-    限速 interval 下沉到 worker 线程内部 sleep，不再阻塞主线程的任务提交。
-    结果超过 100 条时自动压缩非 VULNERABLE 条目的 evidence。
-    并发度按矩阵规模分级自适应（上限 10）。
-    """
-    concurrency = _batch_concurrency(max_concurrency, len(target_matrix))
-    interval = max(0, interval_ms) / 1000.0
-    secret = secret_key or None
-    p_token = primary_token or None
-    s_token = secondary_token or None
-
-    results: List[Dict[str, Any]] = []
-    start_time = time.time()
-    index_map: Dict[int, int] = {}  # future index -> original matrix index
-
-    with ThreadPoolExecutor(max_workers=concurrency) as executor:
-        futures = {}
-        for idx, entry in enumerate(target_matrix):
-            future = executor.submit(
-                _execute_single_entry,
-                entry, allow_write, secret, p_token, s_token,
-                similarity_threshold, interval, fast_mode, timeout_per_request,
-            )
-            futures[future] = idx
-            # 原实现此处 time.sleep(interval) 会阻塞提交循环；
-            # 现已改为在 worker 函数内部 sleep，主线程立即把所有任务提交完。
-
-        for future in as_completed(futures):
-            result = future.result()
-            result["_matrix_index"] = futures[future]
-            results.append(result)
-
-    # 保持原始矩阵顺序
-    results.sort(key=lambda r: r.pop("_matrix_index", 0))
-
-    # 大批量结果压缩：>100 条时精简非漏洞条目证据
-    results = _compress_batch_results(results)
-
-    elapsed_ms = round((time.time() - start_time) * 1000, 2)
-
-    # 聚合统计
-    stats = {
-        "total": len(results),
-        "vulnerable": sum(1 for r in results if r["verdict"] == "VULNERABLE"),
-        "safe": sum(1 for r in results if r["verdict"] == "SAFE"),
-        "blocked": sum(1 for r in results if r["verdict"] == "BLOCKED"),
-        "inconclusive": sum(1 for r in results if r["verdict"] == "INCONCLUSIVE"),
-        "error": sum(1 for r in results if r["verdict"] == "ERROR"),
-        "auditable_vulnerable": sum(
-            1 for r in results if r["verdict"] == "VULNERABLE" and r.get("is_auditable")
-        ),
-    }
-
-    # 高风险端点优先排序
-    vulnerable = [r for r in results if r["verdict"] == "VULNERABLE"]
-    vulnerable.sort(key=lambda r: r["confidence"], reverse=True)
-
-    return {
-        "status": "DELIVERED",
-        "scan_summary": stats,
-        "elapsed_ms": elapsed_ms,
-        "concurrency": concurrency,
-        "vulnerable_endpoints": vulnerable,
-        "all_results": results,
-    }
-
-
 @mcp.tool()
 def batch_differential_scan(
-    target_matrix: List[Dict[str, Any]],
+    target_matrix: list[dict[str, Any]],
     max_concurrency: int = 3,
     interval_ms: int = 100,
     allow_write: bool = False,
@@ -409,7 +200,7 @@ def batch_differential_scan(
     secondary_token: str = "",
     similarity_threshold: float = 0.85,
     timeout_per_request: float = 10.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     批量执行待测矩阵差分扫描。
     - 并发度按矩阵规模分级自适应（≤100→max, 101-500→min(max,5),
@@ -421,7 +212,7 @@ def batch_differential_scan(
     - 结果 >100 条时自动压缩非漏洞条目证据
     - 聚合输出：按 VULNERABLE/SAFE/BLOCKED/INCONCLUSIVE/ERROR 分类统计
     """
-    return _run_batch_scan(
+    return run_batch_scan(
         target_matrix=target_matrix,
         max_concurrency=max_concurrency,
         interval_ms=interval_ms,
@@ -437,7 +228,7 @@ def batch_differential_scan(
 
 @mcp.tool()
 def batch_differential_scan_fast(
-    target_matrix: List[Dict[str, Any]],
+    target_matrix: list[dict[str, Any]],
     max_concurrency: int = 3,
     interval_ms: int = 100,
     allow_write: bool = False,
@@ -446,14 +237,14 @@ def batch_differential_scan_fast(
     secondary_token: str = "",
     similarity_threshold: float = 0.85,
     timeout_per_request: float = 10.0,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     批量差分扫描的快速变体：跳过非 auditable 端点的详细证据收集，
     只收集 verdict 与关键状态码，适用于大规模初步扫描（1000+ 端点）。
 
     与 batch_differential_scan 接口完全一致，仅证据收集更轻量。
     """
-    return _run_batch_scan(
+    return run_batch_scan(
         target_matrix=target_matrix,
         max_concurrency=max_concurrency,
         interval_ms=interval_ms,
@@ -468,13 +259,110 @@ def batch_differential_scan_fast(
 
 
 @mcp.tool()
+def emit_audit_report(
+    scan_results: list[dict[str, Any]],
+    output_dir: str = "audit_reports",
+    scan_id: str = "",
+    program_name: str = "",
+) -> dict[str, Any]:
+    """
+    将扫描结果落盘为 Markdown + JSON 双通道审计报告。
+
+    - 文件名：audit_<YYYYMMDD_HHMMSS>.{md,json}（同一次调用时间戳一致）
+    - JSON 含 verdict_distribution 与全量结果；Markdown 含判定分布总表与漏洞明细
+    - output_dir 不存在时递归创建
+    """
+    return emit_report(
+        scan_results=scan_results,
+        output_dir=output_dir,
+        scan_id=scan_id,
+        program_name=program_name,
+    )
+
+
+@mcp.tool()
+def run_full_pipeline(
+    openapi_spec: str = "",
+    har_content: str = "",
+    base_url_override: str = "",
+    program_id: str = "PROG-AUTO",
+    program_name: str = "Automated Audit Program",
+    primary_token: str = "",
+    secondary_token: str = "",
+    secret_key: str = "",
+    allow_write: bool = False,
+    similarity_threshold: float = 0.85,
+    max_concurrency: int = 3,
+    interval_ms: int = 100,
+    timeout_per_request: float = 10.0,
+    mock_id_value: str = "1001",
+    only_auditable: bool = False,
+    fast_mode: bool = False,
+    output_dir: str = "",
+    ws_bridge_url: str = "",
+    scope_include_hosts: str = "",
+    scope_include_paths: str = "",
+    scope_exclude_paths: str = "",
+) -> dict[str, Any]:
+    """
+    全链路自动化审计流水线：摄入 → 范围过滤 → 差分扫描 → PoC → 赏金 → 报告 → 推流。
+
+    - openapi_spec / har_content 至少提供一个（JSON 字符串或文件路径）
+    - scope_* 为逗号分隔的授权范围约束（host 子串 / 路径正则）
+    - 非幂等写操作受 P0-INVARIANT-03 熔断保护（allow_write 默认 False）
+    - ws_bridge_url 非空时，漏洞工件 best-effort 推送至 WebSocket 广播网关
+    """
+    sources: list[PipelineSource] = []
+    if openapi_spec.strip():
+        sources.append(PipelineSource(
+            source_type="openapi",
+            content=openapi_spec,
+            base_url_override=base_url_override,
+        ))
+    if har_content.strip():
+        sources.append(PipelineSource(source_type="har", content=har_content))
+    if not sources:
+        return {"status": "FAIL", "error": "openapi_spec 与 har_content 不能同时为空"}
+
+    def _split_csv(raw: str) -> list[str]:
+        return [p.strip() for p in (raw or "").split(",") if p.strip()]
+
+    config = PipelineConfig(
+        program_id=program_id,
+        program_name=program_name,
+        primary_token=primary_token,
+        secondary_token=secondary_token,
+        secret_key=secret_key,
+        allow_write=allow_write,
+        similarity_threshold=similarity_threshold,
+        max_concurrency=max_concurrency,
+        interval_ms=interval_ms,
+        fast_mode=fast_mode,
+        timeout_per_request=timeout_per_request,
+        mock_id_value=mock_id_value,
+        only_auditable=only_auditable,
+        output_dir=output_dir or None,
+        ws_bridge_url=ws_bridge_url,
+        scope=ScopePolicy(
+            include_hosts=_split_csv(scope_include_hosts) or None,
+            include_path_patterns=_split_csv(scope_include_paths),
+            exclude_path_patterns=_split_csv(scope_exclude_paths),
+        ),
+    )
+    try:
+        return run_pipeline(sources=sources, config=config)
+    except Exception as e:
+        return {"status": "FAIL", "error": str(e), "type": type(e).__name__}
+
+
+@mcp.tool()
 def verify_remediation(
     test_url: str,
     patch_code_snippet: str,
     original_handler_snippet: str = "",
     primary_token: str = "token-alice",
     secondary_token: str = "token-bob",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     对生成的修复补丁执行沙盒语法编译与行级安全语义断言。
     只有通过验证（verified_safe=True），整个越权审计与自愈流程才算闭环。

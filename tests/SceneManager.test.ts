@@ -54,7 +54,12 @@ describe('SceneManager (CI/CD Automated Execution Spec v7.0-STRICT)', () => {
       },
     };
 
-    vi.mocked(THREE.WebGLRenderer).mockImplementation(() => mockRendererInstance);
+    // vitest 5+：箭头函数实现不可用于 `new`，须以函数表达式构造 mock 实例
+    vi.mocked(THREE.WebGLRenderer).mockImplementation(
+      function (this: unknown) {
+        return mockRendererInstance;
+      } as unknown as typeof THREE.WebGLRenderer,
+    );
     vi.mocked(THREE.WebGLRenderer).mockClear();
     mockRendererInstance.render.mockClear();
   });
