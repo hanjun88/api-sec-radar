@@ -17,6 +17,12 @@ services:
     restart: unless-stopped
     stop_signal: SIGTERM
     stop_grace_period: 5s
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.connect(('127.0.0.1', 8765)); s.close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 3s
 
   dashboard:
     build:

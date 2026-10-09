@@ -15,11 +15,27 @@ echo "[PIPELINE] 正在初始化态势感知可视化大屏环境..."
 command -v python3 >/dev/null 2>&1 || { echo "[ERROR] Python3 未安装"; exit 1; }
 python3 -c "import websockets" 2>/dev/null || { echo "[ERROR] 缺失 websockets 依赖，请执行: pip install websockets"; exit 1; }
 
-# 2. 释放残留端口
+# 2. 释放残留端口（lsof 优先，ss 回退）
+_port_pid() {
+  local port="$1"
+  local pid
+  pid=$(lsof -ti tcp:"$port" 2>/dev/null || true)
+  if [ -n "$pid" ]; then
+    echo "$pid"
+    return
+  fi
+  # ss 回退（lsof 不可用时）：解析 LISTEN 端口对应的 pid
+  pid=$(ss -ltnp "sport = :$port" 2>/dev/null \
+    | grep -oP 'pid=\K[0-9]+' | head -1 || true)
+  if [ -n "$pid" ]; then
+    echo "$pid"
+  fi
+}
+
 cleanup_ports() {
   for port in "$WS_PORT" "$HTTP_PORT"; do
     local pid
-    pid=$(lsof -ti tcp:"$port" 2>/dev/null || true)
+    pid=$(_port_pid "$port")
     if [ -n "$pid" ]; then
       echo "[CLEANUP] 释放占用端口: $port (PID: $pid)"
       kill -9 "$pid" 2>/dev/null || true
