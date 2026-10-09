@@ -596,7 +596,7 @@ class ApiAccessAuditor:
 
         新增分类：
         - SUSPECT: 双方 2xx 但响应体塌缩（<30%），软越权嫌疑
-        - PRIV_ESCALATION: primary 4xx + secondary 2xx，权限提升
+        - PRIV_ESCALATION: primary 401/403 + secondary 2xx，权限提升
         - LIKELY_SAFE: primary 2xx + secondary 3xx，可能被重定向拒绝
         """
         # 双方都 2xx
@@ -615,8 +615,10 @@ class ApiAccessAuditor:
         if 200 <= primary_status < 300 and 400 <= secondary_status < 500:
             return "SAFE", 0.95
 
-        # 新增：primary 4xx + secondary 2xx → 权限提升（属主被拒但攻击者通过）
-        if primary_status >= 400 and 200 <= secondary_status < 300:
+        # 权限提升：属主被权限拒绝（401/403）但攻击者成功（2xx）。
+        # 仅认 401/403——5xx 是服务端错误、404 是资源不存在、
+        # 3xx 是重定向，均非权限拒绝语义，误判会抬高误报率。
+        if primary_status in (401, 403) and 200 <= secondary_status < 300:
             return "PRIV_ESCALATION", 0.75
 
         # 新增：primary 2xx + secondary 3xx → 可能被重定向到登录页（大概率安全）
