@@ -8,6 +8,7 @@ batch_scan.py: 待测矩阵批量差分扫描引擎（无 MCP 依赖的共享实
 - 限速 interval 下沉到 worker 线程，不阻塞任务提交；
 - 每条请求先过统一请求安全门禁（URL/Header/方法覆盖/写熔断/对抗检测），
   阻断项以 BLOCKED 判定进入结果流，绝不静默放行；
+- 可选 only_auditable 预过滤（默认关闭）：排除非对象级引用端点后再扫描；
 - 结果 >100 条时自动压缩非漏洞条目证据；
 - 错误隔离：单条失败不影响整体。
 
@@ -23,6 +24,7 @@ from typing import Any
 from .adversarial_guard import validate_request_security
 from .core import ApiAccessAuditor, DifferentialTestInput, RequestIdentity
 from .hook import build_hook_chain
+from .openapi import filter_auditable
 
 # 富证据 verdict：这些判定的完整证据链必须保留（PoC 生成依赖），
 # 批量压缩时不得精简。LIKELY_SAFE 语义偏安全，不含越权证据。
@@ -218,13 +220,27 @@ def run_batch_scan(
     similarity_threshold: float = 0.85,
     fast_mode: bool = False,
     timeout_per_request: float = 10.0,
+    only_auditable: bool = False,
 ) -> dict[str, Any]:
     """批量差分扫描的共享实现。
 
-    限速 interval 下沉到 worker 线程内部 sleep，不阻塞主线程的任务提交。
+    限速 interval 下沉到 worker 线程内部 sleep，不阻塞主线程批量提交任务。
     结果超过 100 条时自动压缩非 VULNERABLE 条目的 evidence。
     并发度按矩阵规模分级自适应（上限 10）。
+
+    Args:
+        only_auditable: 为 True 时先过滤掉非 auditable 端点（is_auditable=False，
+            如 /health 等无对象级引用的集合端点）再扫描，被过滤条数记入
+            返回值的 ``skipped_non_auditable``。默认 False 保持既有行为，
+            供调用方按需开启纵深防御。
     """
+    # 可选的 auditable 过滤（纵深防御：直接传裸矩阵时排除非对象级引用端点）
+    skipped_non_auditable = 0
+    if only_auditable:
+        filtered = filter_auditable(target_matrix)
+        skipped_non_auditable = len(target_matrix) - len(filtered)
+        target_matrix = filtered
+
     concurrency = batch_concurrency(max_concurrency, len(target_matrix))
     interval = max(0, interval_ms) / 1000.0
     secret = secret_key or None
@@ -279,6 +295,7 @@ def run_batch_scan(
         "scan_summary": stats,
         "elapsed_ms": elapsed_ms,
         "concurrency": concurrency,
+        "skipped_non_auditable": skipped_non_auditable,
         "vulnerable_endpoints": vulnerable,
         "all_results": results,
     }

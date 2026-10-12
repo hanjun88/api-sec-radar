@@ -19,7 +19,8 @@ from urllib.parse import urlparse
 from pydantic import BaseModel
 
 # 复用 OpenAPI 摄入的对象标识符识别正则（双通道判定标准一致）
-from .openapi import ID_PATH_REGEX, ID_QUERY_REGEX
+# 复用规范文件 allowlist 守卫（H2：摄入通道唯一文件读取入口）
+from .openapi import ID_PATH_REGEX, ID_QUERY_REGEX, load_spec_file
 
 VALID_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
@@ -60,12 +61,11 @@ def _is_object_ref_path(path: str) -> bool:
 
 
 def _load_har(content_or_path: str) -> dict[str, Any]:
-    """载入 HAR JSON（字符串或文件路径）。"""
+    """载入 HAR JSON（字符串或文件路径；路径经 load_spec_file allowlist 守卫）。"""
     stripped = content_or_path.strip()
     if stripped.startswith("{"):
         return json.loads(stripped)
-    with open(content_or_path, encoding="utf-8") as f:
-        return json.load(f)
+    return json.loads(load_spec_file(content_or_path))
 
 
 def _headers_to_dict(headers: Any) -> dict[str, str]:
@@ -95,7 +95,7 @@ def parse_har(
     解析 HAR 流量，输出标准化待测矩阵。
 
     Args:
-        content_or_path: HAR JSON 字符串或文件路径。
+        content_or_path: HAR JSON 字符串或文件路径（路径须为 .json/.har 后缀的普通文件）。
         primary_headers: 基线身份请求头（覆盖录制值）。
         secondary_headers: 待测试身份请求头（覆盖录制值）。
         max_entries: 最大摄入条目数（防御性上限，防超大 HAR 耗尽内存）。

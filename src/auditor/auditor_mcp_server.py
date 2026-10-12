@@ -182,7 +182,9 @@ def ingest_openapi(
             primary_headers=primary_headers,
             mock_id_value=mock_id_value,
         )
-    except (json.JSONDecodeError, FileNotFoundError, OSError) as e:
+    except (OSError, ValueError) as e:
+        # ValueError 覆盖 json.JSONDecodeError 与路径 allowlist 拒绝
+        # （PATH_NOT_ALLOWED / SPEC_PATH_INVALID）
         return {"status": "FAIL", "error": f"OpenAPI 解析失败: {e}"}
 
     total = len(matrix)
@@ -212,6 +214,7 @@ def batch_differential_scan(
     secondary_token: str = "",
     similarity_threshold: float = 0.85,
     timeout_per_request: float = 10.0,
+    only_auditable: bool = False,
 ) -> dict[str, Any]:
     """
     批量执行待测矩阵差分扫描。
@@ -223,6 +226,8 @@ def batch_differential_scan(
     - 限速 interval 下沉到 worker 线程，不阻塞任务提交
     - 结果 >100 条时自动压缩非漏洞条目证据
     - 聚合输出：按 VULNERABLE/SAFE/BLOCKED/INCONCLUSIVE/ERROR 分类统计
+    - only_auditable=True 时先过滤非 auditable 端点（如 /health），
+      被过滤条数见返回值的 skipped_non_auditable（默认 False，保持兼容）
     """
     return run_batch_scan(
         target_matrix=target_matrix,
@@ -235,6 +240,7 @@ def batch_differential_scan(
         similarity_threshold=similarity_threshold,
         fast_mode=False,
         timeout_per_request=timeout_per_request,
+        only_auditable=only_auditable,
     )
 
 
@@ -249,12 +255,14 @@ def batch_differential_scan_fast(
     secondary_token: str = "",
     similarity_threshold: float = 0.85,
     timeout_per_request: float = 10.0,
+    only_auditable: bool = False,
 ) -> dict[str, Any]:
     """
     批量差分扫描的快速变体：跳过非 auditable 端点的详细证据收集，
     只收集 verdict 与关键状态码，适用于大规模初步扫描（1000+ 端点）。
 
-    与 batch_differential_scan 接口完全一致，仅证据收集更轻量。
+    与 batch_differential_scan 接口完全一致，仅证据收集更轻量；
+    only_auditable=True 时先过滤非 auditable 端点再扫描（默认 False）。
     """
     return run_batch_scan(
         target_matrix=target_matrix,
@@ -267,6 +275,7 @@ def batch_differential_scan_fast(
         similarity_threshold=similarity_threshold,
         fast_mode=True,
         timeout_per_request=timeout_per_request,
+        only_auditable=only_auditable,
     )
 
 

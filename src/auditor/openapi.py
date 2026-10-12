@@ -8,6 +8,7 @@ openapi.py: OpenAPI / Swagger 规范解析器，提取对象级待测矩阵
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 from urllib.parse import urljoin
@@ -28,6 +29,44 @@ ID_QUERY_REGEX = re.compile(
 
 VALID_METHODS = {"get", "post", "put", "delete", "patch"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+# 路径模式允许读取的规范文档后缀白名单（H2：摄入通道纵深防御，拒绝任意本地文件）
+ALLOWED_SPEC_SUFFIXES = frozenset({".json", ".har"})
+
+
+def load_spec_file(
+    path: str,
+    allowed_suffixes: frozenset[str] = ALLOWED_SPEC_SUFFIXES,
+) -> str:
+    """
+    带 allowlist 的规范文档文件读取（摄入通道唯一文件读取入口）。
+
+    路径模式下仅接受**已存在的普通文件**且后缀在白名单内：
+
+    - 后缀不在 ``{".json", ".har"}`` → ``PATH_NOT_ALLOWED``（阻断把
+      ``/etc/passwd``、``~/.ssh/id_rsa`` 等任意本地文件当规范摄入）；
+    - 路径不存在 / 是目录 / 设备文件 → ``SPEC_PATH_INVALID``。
+
+    内联 JSON 字符串不走本函数，不受后缀约束。
+
+    Returns:
+        文件文本内容（UTF-8 解码）。
+
+    Raises:
+        ValueError: 路径被 allowlist 拒绝，或不是可读的普通文件。
+    """
+    suffix = os.path.splitext(path)[1].lower()
+    if suffix not in allowed_suffixes:
+        raise ValueError(
+            f"PATH_NOT_ALLOWED: 规范文档路径仅接受 {sorted(allowed_suffixes)} 后缀"
+            f"（或直接传入 JSON 字符串内容），得到 {path!r}"
+        )
+    if not os.path.isfile(path):
+        raise ValueError(
+            f"SPEC_PATH_INVALID: 规范文档路径不是可读的普通文件: {path!r}"
+        )
+    with open(path, encoding="utf-8") as f:
+        return f.read()
 
 
 class OpenAPITargetEntry(BaseModel):
@@ -104,7 +143,7 @@ def parse_openapi_spec(
     解析 OpenAPI 3.0 或 Swagger 2.0 文档，输出标准化待测矩阵。
 
     Args:
-        spec_content_or_path: JSON 字符串或文件路径
+        spec_content_or_path: JSON 字符串或文件路径（路径须为 .json/.har 后缀的普通文件）
         base_url_override: 覆盖 spec 中的 servers/host
         secondary_headers: 待测试身份的请求头（如攻击者 token）
         primary_headers: 基线身份请求头（如资源属主 token）
@@ -113,13 +152,12 @@ def parse_openapi_spec(
     Returns:
         待测矩阵列表，每个条目为 OpenAPITargetEntry 的 dict 形式
     """
-    # 1. 载入规范文档
+    # 1. 载入规范文档（路径模式经 allowlist 守卫，拒绝任意本地文件）
     stripped = spec_content_or_path.strip()
     if stripped.startswith("{") or stripped.startswith("["):
         spec = json.loads(stripped)
     else:
-        with open(spec_content_or_path, encoding="utf-8") as f:
-            spec = json.load(f)
+        spec = json.loads(load_spec_file(spec_content_or_path))
 
     # 2. 提取 Base URL
     server_url = _extract_base_url(spec, base_url_override)

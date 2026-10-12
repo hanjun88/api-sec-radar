@@ -211,6 +211,36 @@ class TestMcpServerE2E:
         assert scan["scan_summary"]["total"] == 3
         assert scan["scan_summary"]["vulnerable"] >= 1
 
+    def test_batch_scan_only_auditable(self, mcp_client, mock_target_server):
+        """only_auditable=True：非对象级引用端点（/api/v1/health）被预过滤。"""
+        ingest = mcp_client.tool("ingest_openapi", {
+            "spec_content_or_path": _spec(mock_target_server),
+        })
+        matrix = ingest["target_matrix"]
+        assert len(matrix) == 3
+
+        scan = mcp_client.tool("batch_differential_scan", {
+            "target_matrix": matrix,
+            "only_auditable": True,
+            "primary_token": "token-alice",
+            "secondary_token": "token-bob",
+        })
+        assert scan["status"] == "DELIVERED"
+        assert scan["skipped_non_auditable"] == 1
+        assert scan["scan_summary"]["total"] == 2
+        assert all(r["is_auditable"] for r in scan["all_results"])
+        assert scan["scan_summary"]["vulnerable"] >= 1
+
+    def test_ingest_openapi_rejects_non_allowlisted_path(self, mcp_client, tmp_path):
+        """H2：摄入通道拒绝白名单外的本地文件（任意文件读取面封闭）。"""
+        secret = tmp_path / "creds"
+        secret.write_text('{"openapi":"3.0.0"}', encoding="utf-8")
+        result = mcp_client.tool("ingest_openapi", {
+            "spec_content_or_path": str(secret),
+        })
+        assert result["status"] == "FAIL"
+        assert "PATH_NOT_ALLOWED" in result["error"]
+
     def test_differential_access_test_tool(self, mcp_client, mock_target_server):
         result = mcp_client.tool("differential_access_test", {
             "url": f"{mock_target_server}/api/v1/accounts/1001",
