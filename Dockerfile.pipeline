@@ -1,3 +1,4 @@
+# 单阶段构建（非多阶段）：基础镜像即最终运行镜像，生产应改用 distroless/精简基础镜像。
 FROM python:3.11-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
@@ -6,7 +7,8 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
+# L6：slim 镜像部分升级需 dist-upgrade 才能覆盖依赖变更，故用 dist-upgrade 替代 upgrade。
+RUN apt-get update && apt-get dist-upgrade -y && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

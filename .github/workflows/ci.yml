@@ -1,5 +1,11 @@
 name: "7.0.0-STRICT CI/CD Pipeline Gate"
 
+env:
+  # 后端覆盖率下限（防倒退门禁）。基线 82%（全链路 soak、feeder 入口解耦、
+  # sandbox_verifier AST 分支补齐后实测），留 4 点缓冲容纳平台偶发波动。
+  # 新增代码须同步补测试，否则门禁失败。
+  COVERAGE_MIN: "78"
+
 on:
   push:
     branches: [main, master]
@@ -12,7 +18,7 @@ concurrency:
 
 jobs:
   frontend-gate:
-    name: "Frontend: Typecheck & Vitest (16/16)"
+    name: "Frontend: Typecheck & Vitest (28/28)"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Codebase
@@ -25,17 +31,28 @@ jobs:
           cache: "npm"
 
       - name: Install Dependencies
-        run: npm ci || npm install
+        # L7：固定 npm ci，避免缺 lock 时回落到 npm install 掩盖不可复现。
+        run: npm ci
 
       - name: TypeScript Strict Typecheck
         run: npx tsc --noEmit
 
-      - name: Execute SceneManager Vitest Suite
-        run: npx vitest run tests/SceneManager.test.ts
+      - name: Execute Frontend Vitest Suite (28 tests)
+        run: npx vitest run
 
   backend-gate:
-    name: "Backend: Pytest Suite & AST Audit"
+    name: "Backend: Pytest & AST Audit (mcp ${{ matrix.mcp-spec }})"
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # mcp v1 (<2) 分支承担覆盖率门禁与 artifact 上传；
+          # mcp v2 (>=2) 分支仅跑纯测试，验证双代兼容，不重复计量/上传。
+          - mcp-spec: "<2"
+            coverage: true
+          - mcp-spec: ">=2"
+            coverage: false
     steps:
       - name: Checkout Codebase
         uses: actions/checkout@v4
@@ -46,18 +63,35 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install Python Dependencies
+      - name: Install Python Dependencies (mcp ${{ matrix.mcp-spec }})
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt "mcp${{ matrix.mcp-spec }}"
 
       - name: Python AST Compilation Check
         run: |
+          python3 -m py_compile src/auditor/*.py
           python3 -m py_compile src/pipeline/*.py
           python3 -m py_compile tests/*.py
 
-      - name: Execute Full Pytest Regression Suite
-        run: pytest tests/ -v --durations=10
+      - name: Execute Full Pytest Regression Suite with Coverage Gate
+        if: matrix.coverage
+        run: |
+          pytest tests/ -v --durations=10 \
+            --cov=src --cov-report=term-missing --cov-report=xml \
+            --cov-fail-under=${{ env.COVERAGE_MIN }}
+
+      - name: Execute Full Pytest Regression Suite (no coverage)
+        if: ${{ !matrix.coverage }}
+        run: |
+          pytest tests/ -v --durations=10
+
+      - name: Upload Coverage Report
+        if: ${{ always() && matrix.coverage }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage-report
+          path: coverage.xml
 
   container-gate:
     name: "Container: Docker Build & Compose Lint"
@@ -105,24 +139,49 @@ jobs:
           docker build -t sec-radar/ws-bridge:local -f Dockerfile.pipeline .
           docker build -t sec-radar/dashboard:local -f Dockerfile.dashboard .
 
-      - name: Trivy Scan — Pipeline Image (CRITICAL, exit-code 1)
+      # M9：零日加固。原单条扫描用 ignore-unfixed:true 会静默放过「无上游修复」
+      # 的 CRITICAL（如未钉版的基础镜像 os 包）。改为：os 类 CRITICAL 必须去掉
+      # ignore-unfixed（任何未修复 CRITICAL 一律 fail）；library 类保留 ignore-unfixed
+      # 以避免纯依赖维护噪音阻塞 CI。
+
+      - name: Trivy Scan — Pipeline Image (OS CRITICAL, no ignore-unfixed)
+        uses: aquasecurity/trivy-action@v0.9.2
+        with:
+          image-ref: "sec-radar/ws-bridge:local"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: false
+          vuln-type: "os"
+          severity: "CRITICAL"
+
+      - name: Trivy Scan — Pipeline Image (Library CRITICAL)
         uses: aquasecurity/trivy-action@v0.9.2
         with:
           image-ref: "sec-radar/ws-bridge:local"
           format: "table"
           exit-code: "1"
           ignore-unfixed: true
-          vuln-type: "os,library"
+          vuln-type: "library"
           severity: "CRITICAL"
 
-      - name: Trivy Scan — Dashboard Image (CRITICAL, exit-code 1)
+      - name: Trivy Scan — Dashboard Image (OS CRITICAL, no ignore-unfixed)
+        uses: aquasecurity/trivy-action@v0.9.2
+        with:
+          image-ref: "sec-radar/dashboard:local"
+          format: "table"
+          exit-code: "1"
+          ignore-unfixed: false
+          vuln-type: "os"
+          severity: "CRITICAL"
+
+      - name: Trivy Scan — Dashboard Image (Library CRITICAL)
         uses: aquasecurity/trivy-action@v0.9.2
         with:
           image-ref: "sec-radar/dashboard:local"
           format: "table"
           exit-code: "1"
           ignore-unfixed: true
-          vuln-type: "os,library"
+          vuln-type: "library"
           severity: "CRITICAL"
 
       - name: Generate CycloneDX SBOM — Pipeline Image

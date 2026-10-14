@@ -1,7 +1,14 @@
+# 可编辑的下界规格（人类维护用）。精确可复现版本见 requirements.lock（M11）。
+# CI / 镜像构建如需锁版，请改用 `pip install -r requirements.lock`。
 websockets>=12.0
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
 requests>=2.31.0
-mcp>=1.0.0
+# 双代兼容：导入处对 mcp v1（mcp.server.fastmcp.FastMCP）与
+# v2（mcp.server.mcpserver.MCPServer）做了回退，见
+# src/auditor/auditor_mcp_server.py。已在 1.30.0 与 2.3.0 下验证
+# 全量测试通过。上限 <3 仅防未来大版本再次改名。
+mcp>=1.0.0,<3.0.0
 pydantic>=2.0.0
 httpx>=0.25.0

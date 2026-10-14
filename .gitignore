@@ -14,6 +14,15 @@ build/
 *.egg-info/
 .pytest_cache/
 .coverage
+coverage.xml
 htmlcov/
+# 编辑器/工具链写前备份产物，不进版本库
+*.bak
+
+# AI 会话记忆：交接/项目规则可提交，按日流水不进版本库
+.ai-memory/*/
+!.ai-memory/project_memory.md
+!.ai-memory/handoff.md
+
 .DS_Store
 *.log

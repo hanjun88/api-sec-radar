@@ -160,7 +160,9 @@ class _MockTargetHandler(BaseHTTPRequestHandler):
                     update = json.loads(body.decode("utf-8") or "{}")
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     update = {}
-                self._MOCK_ACCOUNTS[acc_id].update(
+                # 模块级账户表（非实例属性），此前误写 self._MOCK_ACCOUNTS 导致
+                # PUT 端点 500，越权写入靶场不可用。
+                _MOCK_ACCOUNTS[acc_id].update(
                     {k: v for k, v in update.items() if k in ("balance", "owner")}
                 )
                 self._json(200, {"updated": True, "account": _MOCK_ACCOUNTS[acc_id]})
@@ -432,19 +434,5 @@ def auditor_mcp_client(mock_target_server: str):
         client.close()
 
 
-@pytest.fixture(scope="module")
-def bounty_mcp_client():
-    """启动 bounty_platform MCP 子进程并完成 initialize 握手。"""
-    pytest.importorskip("mcp")
-    import sys as _sys
-    client = MCPTestClient([_sys.executable, "-m", "bounty_platform.server"])
-    try:
-        client.call("initialize", {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pytest", "version": "1.0"},
-        })
-        client.notify("notifications/initialized")
-        yield client
-    finally:
-        client.close()
+# 已移除 bounty_mcp_client：其依赖的 bounty_platform 包不随仓库分发，
+# 也未在 requirements.txt 声明，使用该 fixture 必然失败（幽灵引用）。

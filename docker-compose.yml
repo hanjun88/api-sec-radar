@@ -1,5 +1,3 @@
-version: '3.8'
-
 networks:
   sec-radar-net:
     driver: bridge
@@ -49,10 +47,14 @@ services:
     networks:
       - sec-radar-net
     restart: unless-stopped
+    # M10：软依赖——仅等待 ws-bridge 启动即可，不阻塞在 service_healthy 探针上，
+    # 避免探针失败导致 feeder 永久死锁不启动。feeder 自身对网关不可用已做降级。
     depends_on:
       ws-bridge:
-        condition: service_healthy
+        condition: service_started
 
+  # M10：test-feeder 带 profiles:[test]，默认 `docker compose up` 不会启动它，
+  # 必须显式 `docker compose up -d --build --profile test` 才会拉起。
   test-feeder:
     build:
       context: .
@@ -64,8 +66,9 @@ services:
       - WS_SERVER_URL=ws://ws-bridge:8765
     networks:
       - sec-radar-net
+    restart: unless-stopped
     profiles:
       - test
     depends_on:
       ws-bridge:
-        condition: service_healthy
+        condition: service_started

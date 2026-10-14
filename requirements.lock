@@ -1,0 +1,21 @@
+# requirements.lock — 直接依赖的精确版本锁定（M11 修复：解决 requirements.txt 仅设下界
+# 导致 CI/镜像不可完全复现的问题）。
+#
+# 本文件钉定「直接依赖」的精确版本（版本号取自本仓库当前验证环境）。要在 CI/构建中
+# 强制使用本锁，可将 Dockerfile.pipeline 与 ci.yml 中的 `pip install -r requirements.txt`
+# 替换为 `pip install -r requirements.lock`。
+#
+# 如需生成「完整传递依赖 + SHA256 哈希」的强锁（推荐用于供应链加固）：
+#   pip install pip-tools
+#   pip-compile --generate-hashes -o requirements.lock requirements.txt
+#
+# 注意：本文件仅钉定直接依赖；其传递依赖仍由 pip 解析。在已安装上述版本的同一环境
+# 中重建可得到一致结果。
+websockets==16.0
+pytest==9.0.2
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+requests==2.32.5
+mcp==1.30.0
+pydantic==2.12.5
+httpx==0.28.1

@@ -1,3 +1,4 @@
+# 单阶段构建（非多阶段）：nginx 基础镜像即最终运行镜像。
 FROM nginx:1.27-alpine
 
 RUN apk update && apk upgrade --no-cache && rm -rf /var/cache/apk/*
