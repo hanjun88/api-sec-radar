@@ -49,20 +49,53 @@
 
 ## 四、未完成 / 剩余风险
 
-1. **`live_scan_feeder.py`（81%）/ `test_stream_feeder.py`（80%）**：循环入口与退避语义已覆盖，
+1. **`live_scan_feeder.py`（79%）/ `test_stream_feeder.py`（80%）**：循环入口与退避语义已覆盖，
    剩余未覆盖为 stderr 异常打印分支与 `main()` 信号注册。
-2. **`ws_bridge_server.py`（69%）**：`start()` 的 serve 生命周期与信号处理未覆盖。
-3. **security-gate 本地未验证**：trivy 未安装，Trivy CRITICAL 扫描只能在 GitHub Actions 观察。
-4. **mcp 2.x 未进 CI 实际运行验证**：矩阵已配好，但本地无法执行 GitHub Actions；
-   需首次 push 后在 Actions 页面确认两条 leg 均绿。
+2. ~~**`ws_bridge_server.py`（69%）**~~ **已解决**：新增 `tests/test_ws_bridge.py`
+   （start/stop 生命周期 + 并发广播 + 掉线清理），覆盖率 69% → **83%**。
+3. ~~**security-gate 本地未验证**~~ **已解决**：Actions run `38650283693`
+   的 `Security: Trivy Vulnerability Scan & CycloneDX SBOM` 结论 `success`。
+4. ~~**mcp 2.x 未进 CI 实际运行验证**~~ **已实证**：run `38650283693` 两条 leg 均绿——
+   `<2` 装 `mcp-1.30.0`、`>=2` 装 `mcp-2.3.0`，两者各 `280 passed`。
+   v2 的 `FastMCP → MCPServer` 重命名由 `auditor_mcp_server.py` 导入回退吸收，
+   `@mcp.tool()` / `mcp.run(transport="stdio")` 两版用法一致。
 5. **前端 WebGL 层未做真实渲染验证**：jsdom 无 WebGL 上下文，`dispose()` 调用链已断言，
    但驱动层实际回收无法验证。
-6. **`_verdict` 不做可审计性过滤**：属分层约定（由 ingest 层负责），
-   若调用方直接向 `batch_differential_scan` 传非可审计条目，仍会得到 `VULNERABLE`。
+6. ~~**`_verdict` 不做可审计性过滤**~~ **已加纵深防御**：MCP 工具入口
+   （`batch_differential_scan` / `_fast`）现强制过滤非可审计条目（H3）；
+   但 `core._verdict` 本身仍是分层约定，直接调用该私有函数仍不受此保护。
 
 ## 五、建议下一 Wave
 
-1. **补 `ws_bridge_server.py` 生命周期测试**：`start()` 的 serve 与信号处理，把该模块从 69% 拉起。
-2. **CI 首次 push 后核对双版本 leg**：确认 mcp `<2` / `>=2` 两条矩阵均绿（本地无法验证）。
+1. ~~**补 `ws_bridge_server.py` 生命周期测试**~~ 已完成（见四·2）。
+2. ~~**CI 首次 push 后核对双版本 leg**~~ 已实证（见四·4）。
 3. **前端 WebGL 真实渲染验证**：引入 headless GL（如 `gl` 包）或 Playwright，
    验证 128 节点实例矩阵的真实显存回收。
+
+## 六、5 子代理深度审查 + 定向修复 + 推送（2026-10-11）
+
+**审查**：`DEEP_REVIEW_5AGENTS.md`（5 维并行：审计核心 / MCP 与安全 / 流水线 /
+打包与基础设施 / 测试盲区），共 6 高 + 14 中 + 10 低。
+
+**修复**（commit `ce5cabb` 源码 + `8ee35fd` 测试与基建）：
+
+| 编号 | 问题 | 处置 |
+|---|---|---|
+| H1 | SSRF 护栏是死代码，`validate_request_security` 仅在 docstring 出现 | `core.execute` 建连前接入，fail-closed |
+| H2 | `ingest_openapi` 任意本地文件读取 | 限制 JSON 字面量，拦绝对路径与 `../` |
+| H3 | `batch_differential_scan` 不强制 auditable 过滤 | MCP 入口加纵深防御（防 #9 假阳性复发） |
+| H4 | `PRIV_ESCALATION` 误报（属主侧瞬时 4xx/5xx） | 增加守卫 |
+| H5 | `ws_bridge` 广播途中掉线客户端不清理 | 并发广播 + 每连接超时 + unregister |
+| M2/M3/M4/M5 | 低置信误判、对象引用漏识、Flask 元组 404、tenant 词表 | 逐项修 + AST 用例 |
+| M6/M7/M8 | feeder 静默空转、迭代体无兜底、广播串行 | 存活探测 / 退避重连 / try 兜底 |
+| M9/M10/M11 | Trivy 漏杀零日、compose profile 死锁、依赖未锁版 | 收紧 + `requirements.lock` |
+
+**门禁**：后端 `280 passed` / 覆盖率 `83.04%`（门禁 78）；前端 `tsc` 0 错 + Vitest `28/28`；
+`docker compose config` OK。
+
+**推送**：`1ed8341..8ee35fd` → `hanjun88/api-sec-radar@main`（仓库 PUBLIC）。
+CI run `38650283693` 五 job 全 `success`：**Frontend / Backend(mcp<2) / Backend(mcp>=2) /
+Container / Security**。
+
+**产物**：`api-sec-radar-src-20261011-2232.tar.gz`（316K）与 `.zip`（359K），
+解包冒烟 `280 passed / 83.04%` 已验证。
