@@ -225,6 +225,11 @@ export class SceneManager {
         this.disposeMaterial(mesh.material);
       }
     }
+    // InstancedMesh 等对象持有独立的 GPU 缓冲 (instanceMatrix / instanceColor)，
+    // 需调用其 dispose() 触发 'dispose' 事件，否则渲染器无法释放这些实例缓冲。
+    if (typeof (obj as any).dispose === 'function') {
+      (obj as any).dispose();
+    }
     obj.children.forEach((child) => this.disposeObject3D(child));
   }
 

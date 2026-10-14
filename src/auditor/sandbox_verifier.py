@@ -25,9 +25,20 @@ class VerificationResult(BaseModel):
 
 
 # 行级过滤关键特征：补丁必须绑定当前安全凭据上下文（AST 级检测）
+# M5：扩充归属语义词典，覆盖 obj.uid==g.user、resource.owner== 等合法归属检查
+# （原词表仅含 *_id / current_user 等，导致上述合法检查因词表外而失败）。
 _TENANT_FILTER_NAMES = {
     "tenant_id", "owner_id", "current_user", "user_id",
     "tenantId", "ownerId", "currentUser", "userId",
+    # 归属语义属性（宽松但指向所有权/主体）
+    "uid", "owner", "user", "subject", "principal",
+    "resource_owner", "account_owner", "obj_owner",
+}
+# M5：已知「非授权」标识符——权限/角色检查函数。其引用（如
+# user_is_admin(current_user)）不应通过 tenant 断言，否则属主判定被弱保证绕过。
+_NON_AUTHORIZATION_CALLS = {
+    "user_is_admin", "is_admin", "has_permission", "has_role",
+    "check_permission", "is_superuser", "can_access", "is_authenticated",
 }
 # 实体屏蔽特征：越权访问必须统一返回 404（AST 级检测 HTTPException/status_code=404）
 _NOT_FOUND_STATUS_CODES = {404}
@@ -65,6 +76,8 @@ def _has_tenant_filter_ast(patch_code: str) -> bool:
     for node in ast.walk(tree):
         # 比较表达式：如 user_id == current_user.id / Account.owner_id != owner_id
         if isinstance(node, ast.Compare):
+            if _contains_non_auth_call(node):
+                continue
             names = _extract_identifiers(node)
             if names & _TENANT_FILTER_NAMES:
                 return True
@@ -87,8 +100,26 @@ def _has_tenant_filter_ast(patch_code: str) -> bool:
                         return True
         # if 语句中的条件表达式：如 if account.owner_id != current_user.id
         if isinstance(node, ast.If):
+            if _contains_non_auth_call(node.test):
+                continue
             if _extract_identifiers(node.test) & _TENANT_FILTER_NAMES:
                 return True
+    return False
+
+
+def _contains_non_auth_call(node: ast.AST) -> bool:
+    """检测节点内是否包含已知的「非授权」权限/角色检查调用（M5 排除项）。
+
+    如 user_is_admin(current_user) 这类调用只判定「是否有权限」，
+    本身不构成对特定对象的归属过滤，不应通过 tenant 断言。
+    """
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            for sub in ast.walk(n.func):
+                if isinstance(sub, ast.Name) and sub.id in _NON_AUTHORIZATION_CALLS:
+                    return True
+                if isinstance(sub, ast.Attribute) and sub.attr in _NON_AUTHORIZATION_CALLS:
+                    return True
     return False
 
 
@@ -128,16 +159,23 @@ def _has_not_found_hide_ast(patch_code: str) -> bool:
                 for arg in node.args:
                     if isinstance(arg, ast.Constant) and arg.value in _NOT_FOUND_STATUS_CODES:
                         return True
-            # JSONResponse / Response 等常见响应类
-            if func_names & {"JSONResponse", "Response", "jsonify", "make_response", "ORJSONResponse"}:
-                for kw in node.keywords:
-                    if kw.arg in ("status_code", "status") and isinstance(kw.value, ast.Constant):
-                        if kw.value.value in _NOT_FOUND_STATUS_CODES:
-                            return True
+                # M4：无参 NotFound() / not_found() 在 Flask/Werkzeug 中默认即 404，
+                # 此前因无位置参数而漏检，合法补丁被误判 PARTIAL。
+                if func_names & {"NotFound", "not_found"} and not node.args:
+                    return True
+            # 注：JSONResponse / Response / jsonify / make_response / ORJSONResponse
+            # 等响应类走上方通用 status_code/status 关键字分支即可命中，无需按函数名特化。
+            # 原特化分支（func_names & {...}）内层条件与通用分支逐字相同，恒不可达，已移除。
         # raise 语句：raise HTTPException(status_code=404)
         if isinstance(node, ast.Raise) and node.exc:
             if _has_not_found_hide_ast_single(node.exc):
                 return True
+        # M4：Flask 元组式返回，如 `return jsonify(...), 404`，404 为 Tuple 内裸 Constant。
+        # 此前仅匹配 Assign / Call 形式，该常见写法漏检导致合法补丁判 PARTIAL。
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
+            for elt in node.value.elts:
+                if isinstance(elt, ast.Constant) and elt.value in _NOT_FOUND_STATUS_CODES:
+                    return True
         # 直接赋值：response.status_code = 404
         if isinstance(node, ast.Assign):
             for target in node.targets:

@@ -12,7 +12,7 @@ import random
 import signal
 import sys
 import time
-from typing import Any, Dict, List
+from typing import Any, Awaitable, Callable, Dict, List
 
 try:
     import websockets
@@ -82,11 +82,21 @@ def build_synthetic_artifact() -> Dict[str, Any]:
 
 
 class StreamFeeder:
-    def __init__(self, uri: str = TARGET_WS_URL, interval_sec: float = 0.5):
+    def __init__(
+        self,
+        uri: str = TARGET_WS_URL,
+        interval_sec: float = 0.5,
+        connect_fn: Callable[..., Any] = websockets.connect,
+        sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ):
         self.uri = uri
         self.interval_sec = interval_sec
         self.running = True
         self.sent_count = 0
+        # 可注入的外部依赖：WebSocket 连接工厂与异步 sleep。
+        # 默认值等价于改造前的硬编码行为，CLI 用法不受影响。
+        self._connect = connect_fn
+        self._sleep = sleep_fn
 
     def stop(self) -> None:
         self.running = False
@@ -95,7 +105,7 @@ class StreamFeeder:
         print(f"[FEEDER] 尝试连接网关: {self.uri}")
         while self.running:
             try:
-                async with websockets.connect(self.uri) as ws:
+                async with self._connect(self.uri) as ws:
                     print(f"[FEEDER] WebSocket 链路已建立，开始注入测试工件流...")
                     while self.running:
                         artifact = build_synthetic_artifact()
@@ -105,15 +115,15 @@ class StreamFeeder:
                         print(
                             f"[FEEDER] [#{self.sent_count}] 推送: {artifact['verdict']} -> {artifact['endpoint']}"
                         )
-                        await asyncio.sleep(self.interval_sec)
+                        await self._sleep(self.interval_sec)
             except (websockets.ConnectionClosedError, ConnectionRefusedError) as e:
                 if not self.running:
                     break
                 print(f"[FEEDER] 网关尚未就绪或连接断开 ({e})，2 秒后重试...", file=sys.stderr)
-                await asyncio.sleep(2.0)
+                await self._sleep(2.0)
             except Exception as e:
                 print(f"[FEEDER] 未预期异常: {e}", file=sys.stderr)
-                await asyncio.sleep(2.0)
+                await self._sleep(2.0)
 
 
 async def main() -> None:

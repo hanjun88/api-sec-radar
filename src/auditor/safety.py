@@ -200,7 +200,9 @@ def validate_request_security(
     query_params = query_params or {}
 
     # 延迟导入避免循环依赖（adversarial_guard 不依赖 safety）
-    from bounty_platform.adversarial_guard import (
+    # 原先依赖外部私有包 bounty_platform；该包未随仓库分发且不在
+    # requirements.txt 中，导致本函数必崩。改为仓内本地实现（同契约）。
+    from .adversarial_guard import (
         BypassDetector,
         validate_headers,
         validate_url,

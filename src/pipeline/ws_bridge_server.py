@@ -11,7 +11,7 @@ import json
 import os
 import signal
 import sys
-from typing import Any, Dict, Set
+from typing import Any, Dict, Optional, Set
 
 try:
     import websockets
@@ -21,6 +21,9 @@ except ImportError:
 
 WS_HOST = os.environ.get("WS_HOST", "0.0.0.0")
 WS_PORT = int(os.environ.get("WS_PORT", "8765"))
+# 每连接广播发送超时（秒）。任一慢/挂起客户端超过该时间即判定为死连接并注销，
+# 避免单条 head-of-line 阻塞拖垮全部客户端的广播（M8）。
+WS_SEND_TIMEOUT_SEC = float(os.environ.get("WS_SEND_TIMEOUT_SEC", "2.0"))
 
 
 class BridgeServer:
@@ -31,7 +34,9 @@ class BridgeServer:
         self.running = True
         self.received_count = 0
         self.broadcast_count = 0
-        self.server = None
+        self.send_timeout = WS_SEND_TIMEOUT_SEC
+        # 实际绑定端口（port=0 时由 start() 填充），便于测试断言与排障。
+        self.bound_port: Optional[int] = None
 
     async def register(self, websocket: websockets.WebSocketServerProtocol) -> None:
         self.clients.add(websocket)
@@ -41,16 +46,40 @@ class BridgeServer:
         self.clients.discard(websocket)
         print(f"[BRIDGE] 客户端断开 (当前: {len(self.clients)}) | remote={websocket.remote_address}")
 
-    async def broadcast(self, message: str) -> None:
+    async def broadcast(
+        self,
+        message: str,
+        exclude: websockets.WebSocketServerProtocol | None = None,
+    ) -> None:
+        """
+        广播消息至已接入客户端。
+
+        M8：并发推送每个客户端，并对单连接施加 ``send_timeout`` 超时。任一慢/挂起
+        客户端只会在超时后被判定为死连接并注销，不再 head-of-line 阻塞其他客户端。
+
+        Args:
+            message: 待广播的文本消息。
+            exclude: 需排除的连接（通常为推流方自身），避免回显。
+        """
         if not self.clients:
             return
-        disconnected = set()
-        for client in self.clients:
+
+        disconnected: Set[websockets.WebSocketServerProtocol] = set()
+
+        async def _send_one(client: websockets.WebSocketServerProtocol) -> None:
+            if client is exclude:
+                return
             try:
-                await client.send(message)
+                # 每连接独立超时：坏连接超时即丢弃，不影响其他客户端。
+                await asyncio.wait_for(client.send(message), timeout=self.send_timeout)
                 self.broadcast_count += 1
-            except (websockets.ConnectionClosed, Exception):
+            except Exception:
+                # 连接已断开（含 ConnectionClosed / 超时），收集后统一注销。
+                # 即使 handler 的 finally 尚未运行，广播自身也能清理掉线客户端。
                 disconnected.add(client)
+
+        # 并发推送，单连接异常被 _send_one 内部吞掉，不会中断整体广播。
+        await asyncio.gather(*[_send_one(client) for client in list(self.clients)])
         for dc in disconnected:
             await self.unregister(dc)
 
@@ -71,7 +100,10 @@ class BridgeServer:
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     print(f"[BRIDGE] [#{self.received_count}] 非 JSON 消息，原样透传 ({len(message)} bytes)")
                 # 广播至所有其他客户端（不回发给发送者本身）
-                await self.broadcast(message if isinstance(message, str) else message.decode("utf-8"))
+                await self.broadcast(
+                    message if isinstance(message, str) else message.decode("utf-8"),
+                    exclude=websocket,
+                )
         except websockets.ConnectionClosed:
             pass
         finally:
@@ -80,8 +112,9 @@ class BridgeServer:
     async def start(self) -> None:
         print(f"[BRIDGE] WebSocket 网关启动: ws://{self.host}:{self.port}")
         print(f"[BRIDGE] 等待上游推流与前端客户端接入...")
-        async with websockets.serve(self.handler, self.host, self.port):
-            self.server = True
+        async with websockets.serve(self.handler, self.host, self.port) as server:
+            # 记录实际绑定端口（port=0 时由系统分配），便于测试与排障。
+            self.bound_port = server.sockets[0].getsockname()[1]
             while self.running:
                 await asyncio.sleep(0.5)
 

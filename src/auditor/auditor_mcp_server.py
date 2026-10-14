@@ -8,11 +8,19 @@ api_access_auditor/server.py — MCP 服务入口
 from __future__ import annotations
 
 import json
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Union
 
-from mcp.server.fastmcp import FastMCP
+# mcp 2.x 将 FastMCP 重命名为 MCPServer，旧路径 mcp.server.fastmcp 在 2.x 下
+# 直接抛 ModuleNotFoundError（官方迁移指南：
+# https://py.sdk.modelcontextprotocol.io/v2/migration/ ）。
+# 官方明确该导入回退写法可用，故双代兼容，避免依赖上限解除后整层不可用。
+try:  # mcp >= 2.0
+    from mcp.server.mcpserver import MCPServer as _MCPServer
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP as _MCPServer
 
 from .core import (
     ApiAccessAuditor,
@@ -23,7 +31,7 @@ from .hook import RequestHook, build_hook_chain
 from .openapi import parse_openapi_spec, filter_auditable, filter_safe_methods
 from .sandbox_verifier import verify_python_patch
 
-mcp = FastMCP("api-access-auditor")
+mcp = _MCPServer("api-access-auditor")
 _auditor = ApiAccessAuditor()
 
 
@@ -36,6 +44,28 @@ def _coerce_headers(raw: Union[str, Dict[str, str], None]) -> Dict[str, str]:
     if isinstance(raw, str) and raw.strip():
         return json.loads(raw)
     return {}
+
+
+# 安全约束：避免 ingest_openapi 任意本地文件读取（H2）。
+# 入参若非 JSON 字符串（不以 { 或 [ 开头），则视为文件路径；
+# 此时禁止绝对路径与目录穿越（../），仅允许项目内相对路径。
+def _validate_spec_input(spec_content_or_path: str) -> Optional[str]:
+    """校验 ingest_openapi 的 spec 入参。
+
+    返回错误描述字符串（非法），或 None（合法）。合法情形：
+    - 以 { 或 [ 开头的 JSON 字符串（强制优先）；
+    - 相对路径且不含目录穿越成分。
+    """
+    stripped = spec_content_or_path.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        return None
+    # 视为文件路径：禁止绝对路径与 ../ 穿越
+    if os.path.isabs(spec_content_or_path):
+        return "禁止绝对路径：spec 入参必须为 JSON 字符串或项目内相对路径"
+    norm_parts = stripped.replace("\\", "/").split("/")
+    if any(part in ("..",) for part in norm_parts):
+        return "禁止路径穿越：spec 入参不得包含 '../' 成分"
+    return None
 
 
 @mcp.tool()
@@ -78,7 +108,14 @@ def differential_access_test(
     except ValueError as e:
         return {"status": "VALIDATION_ERROR", "error_detail": str(e)}
 
-    result = _auditor.execute(params)
+    try:
+        result = _auditor.execute(params)
+    except Exception as e:
+        return {
+            "status": "ERROR",
+            "error": str(e),
+            "type": type(e).__name__,
+        }
     return {
         "status": "DELIVERED",
         "verdict": result.verdict,
@@ -113,7 +150,14 @@ def probe_endpoint(
         return {"status": "VALIDATION_ERROR", "error_detail": str(e)}
 
     params = DifferentialTestInput(primary=identity, secondary=identity)
-    result = _auditor.execute(params)
+    try:
+        result = _auditor.execute(params)
+    except Exception as e:
+        return {
+            "status": "ERROR",
+            "error": str(e),
+            "type": type(e).__name__,
+        }
     return {
         "status": "DELIVERED",
         "status_code": result.primary.status_code,
@@ -148,6 +192,11 @@ def ingest_openapi(
         )
     except json.JSONDecodeError as e:
         return {"status": "FAIL", "error": f"headers_json 解析失败: {e}"}
+
+    # H2：入参若非 JSON 字符串，则作为文件路径校验，禁止任意本地文件读取
+    path_error = _validate_spec_input(spec_content_or_path)
+    if path_error is not None:
+        return {"status": "FAIL", "error": f"OpenAPI 摄入拒绝: {path_error}"}
 
     try:
         matrix = parse_openapi_spec(
@@ -318,6 +367,18 @@ def _batch_concurrency(max_concurrency: int, matrix_size: int) -> int:
     return max(1, min(int(max_concurrency), 10))
 
 
+def _filter_auditable_entries(
+    target_matrix: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """MCP 入口纵深防御（H3）：丢弃 is_auditable 非真的条目。
+
+    正常推流路径已在 ingest_openapi(only_auditable=True) 处过滤；
+    此处为直接调用方的兜底，防止 /health 等同形非对象引用端点复现 #9 假阳性。
+    fast_mode 分支（batch_differential_scan_fast）同样经此入口覆盖。
+    """
+    return [e for e in target_matrix if e.get("is_auditable", False) is True]
+
+
 def _run_batch_scan(
     target_matrix: List[Dict[str, Any]],
     max_concurrency: int,
@@ -371,11 +432,15 @@ def _run_batch_scan(
 
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
 
-    # 聚合统计
+    # 聚合统计：必须覆盖 core._verdict 产出的全部 verdict 类别，
+    # 否则 total 与各分类之和不相等，且高危类别会被静默漏计。
     stats = {
         "total": len(results),
         "vulnerable": sum(1 for r in results if r["verdict"] == "VULNERABLE"),
+        "priv_escalation": sum(1 for r in results if r["verdict"] == "PRIV_ESCALATION"),
+        "suspect": sum(1 for r in results if r["verdict"] == "SUSPECT"),
         "safe": sum(1 for r in results if r["verdict"] == "SAFE"),
+        "likely_safe": sum(1 for r in results if r["verdict"] == "LIKELY_SAFE"),
         "blocked": sum(1 for r in results if r["verdict"] == "BLOCKED"),
         "inconclusive": sum(1 for r in results if r["verdict"] == "INCONCLUSIVE"),
         "error": sum(1 for r in results if r["verdict"] == "ERROR"),
@@ -384,8 +449,10 @@ def _run_batch_scan(
         ),
     }
 
-    # 高风险端点优先排序
-    vulnerable = [r for r in results if r["verdict"] == "VULNERABLE"]
+    # 高风险端点优先排序：确认越权（VULNERABLE）、权限提升（PRIV_ESCALATION）
+    # 与软越权嫌疑（SUSPECT）同属高危，均须进入清单，按 confidence 降序。
+    high_risk_verdicts = ("VULNERABLE", "PRIV_ESCALATION", "SUSPECT")
+    vulnerable = [r for r in results if r["verdict"] in high_risk_verdicts]
     vulnerable.sort(key=lambda r: r["confidence"], reverse=True)
 
     return {
@@ -421,6 +488,8 @@ def batch_differential_scan(
     - 结果 >100 条时自动压缩非漏洞条目证据
     - 聚合输出：按 VULNERABLE/SAFE/BLOCKED/INCONCLUSIVE/ERROR 分类统计
     """
+    # H3 纵深防御：MCP 入口强制 auditable 过滤（直接调用方兜底）
+    target_matrix = _filter_auditable_entries(target_matrix)
     return _run_batch_scan(
         target_matrix=target_matrix,
         max_concurrency=max_concurrency,
@@ -453,6 +522,8 @@ def batch_differential_scan_fast(
 
     与 batch_differential_scan 接口完全一致，仅证据收集更轻量。
     """
+    # H3 纵深防御：MCP 入口强制 auditable 过滤（fast_mode 分支同样覆盖）
+    target_matrix = _filter_auditable_entries(target_matrix)
     return _run_batch_scan(
         target_matrix=target_matrix,
         max_concurrency=max_concurrency,

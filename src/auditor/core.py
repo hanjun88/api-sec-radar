@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, Field, field_validator
 
-from .safety import validate_method_safety
+from .safety import validate_method_safety, validate_request_security
 
 
 logger = logging.getLogger(__name__)
@@ -414,11 +414,17 @@ class ApiAccessAuditor:
 
         # P0-INVARIANT-03: 写操作物理熔断（在任何网络连接之前）
         # 传入 body 和 content_type 以检测 GET+body 写绕过
+        # HTTP header 名大小写不敏感。此前直接用原始 key 查找 "content-type"，
+        # 调用方按惯例传 "Content-Type" 时取到空串，导致 GET+JSON body 的
+        # 写绕过检测（SAFE_METHOD_WITH_BODY）静默失效。
+        primary_headers = {
+            str(k).lower(): str(v) for k, v in params.primary.headers.items()
+        }
         is_allowed, block_reason = validate_method_safety(
             params.primary.method,
             params.allow_write,
             body=params.primary.body,
-            content_type=params.primary.headers.get("content-type", ""),
+            content_type=primary_headers.get("content-type", ""),
         )
         if not is_allowed:
             return DifferentialTestOutput(
@@ -442,6 +448,23 @@ class ApiAccessAuditor:
                     "reason": block_reason,
                 },
             )
+
+        # H1: 接入完整安全护栏（SSRF / 请求走私 fail-closed）。
+        # 此前运行路径只调弱 validate_method_safety，adversarial_guard 全套
+        # （validate_url / validate_headers / BypassDetector）是死代码，工具把
+        # URL 直接交给 httpx。现于建连前对 primary / secondary 做完整校验，
+        # 任何校验失败一律 BLOCKED（fail-closed，不打折扣）。
+        # （base_url 在差分场景下即 primary/secondary 的 url，均已在此覆盖。）
+        sec_ok, sec_reason, _ = self._validate_request_security_for(
+            params.primary, params.allow_write
+        )
+        if not sec_ok:
+            return self._blocked_output(params, sec_reason)
+        sec_ok, sec_reason, _ = self._validate_request_security_for(
+            params.secondary, params.allow_write
+        )
+        if not sec_ok:
+            return self._blocked_output(params, sec_reason)
 
         self._ensure_client()
         assert self._client is not None
@@ -507,6 +530,49 @@ class ApiAccessAuditor:
         """复用模块级共享 httpx 连接池。"""
         self._client = _get_shared_client()
 
+    def _validate_request_security_for(
+        self, identity: "RequestIdentity", allow_write: bool
+    ) -> "tuple[bool, Optional[str], list]":
+        """对单个请求身份做完整安全护栏校验（建连前调用，fail-closed）。"""
+        from urllib.parse import parse_qsl, urlsplit
+
+        parsed = urlsplit(identity.url)
+        query_params = dict(parse_qsl(parsed.query))
+        return validate_request_security(
+            identity.url,
+            identity.method,
+            headers=identity.headers,
+            body=identity.body,
+            query_params=query_params,
+            allow_write=allow_write,
+        )
+
+    def _blocked_output(
+        self, params: "DifferentialTestInput", reason: str
+    ) -> "DifferentialTestOutput":
+        """返回一个 verdict=BLOCKED 的证据输出（未发出任何网络请求）。"""
+        return DifferentialTestOutput(
+            verdict="BLOCKED",
+            confidence=1.0,
+            similarity=0.0,
+            primary=ResponseFingerprint(
+                label=params.primary.label, status_code=0,
+                content_length=0, content_hash="", content_type="",
+                elapsed_ms=0, body_preview="",
+            ),
+            secondary=ResponseFingerprint(
+                label=params.secondary.label, status_code=0,
+                content_length=0, content_hash="", content_type="",
+                elapsed_ms=0, body_preview="",
+            ),
+            evidence={
+                "blocked_by": "REQUEST_SECURITY_GATE",
+                "method": params.primary.method.upper(),
+                "allow_write": params.allow_write,
+                "reason": reason,
+            },
+        )
+
     def _send(
         self, identity: RequestIdentity, follow_redirects: bool
     ) -> httpx.Response:
@@ -571,17 +637,22 @@ class ApiAccessAuditor:
             # 新增：同 2xx 但响应体塌缩（secondary < primary 的 30%）→ 软越权嫌疑
             if primary_len > 0 and secondary_len < primary_len * 0.3:
                 return "SUSPECT", 0.55
-            # 相似度在阈值 70% 以上 → 可能越权（降置信度）
-            if similarity >= threshold * 0.7:
-                return "VULNERABLE", round(similarity * 0.8, 4)
+            # 低置信区间收紧（M2）：原 threshold*0.7 即判 VULNERABLE 过宽，
+            # 端点忽略 id 返回调用者自身同形数据时易被误报。现抬高低置信阈值到
+            # threshold*0.85，且区间内不再直接判 VULNERABLE（降为 SUSPECT 供复核）。
+            if similarity >= threshold * 0.85:
+                return "SUSPECT", 0.5
             return "INCONCLUSIVE", 0.4
 
         # primary 2xx + secondary 4xx → 安全（正确拒绝）
         if 200 <= primary_status < 300 and 400 <= secondary_status < 500:
             return "SAFE", 0.95
 
-        # 新增：primary 4xx + secondary 2xx → 权限提升（属主被拒但攻击者通过）
-        if primary_status >= 400 and 200 <= secondary_status < 300:
+        # 新增：primary 4xx + secondary 2xx → 权限提升。
+        # 收紧（H4）：仅当属主被鉴权拒绝（401/403）而攻击者通过时才判权限提升；
+        # 属主瞬时 429 限流 / 5xx 故障 / 其他 4xx 属预期错误响应，
+        # 不应误判为权限提升（否则属主偶发 401/429/5xx 而攻击者 200 即误报）。
+        if primary_status in (401, 403) and 200 <= secondary_status < 300:
             return "PRIV_ESCALATION", 0.75
 
         # 新增：primary 2xx + secondary 3xx → 可能被重定向到登录页（大概率安全）

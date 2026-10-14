@@ -14,20 +14,41 @@ from urllib.parse import urljoin
 
 from pydantic import BaseModel
 
-# Path 中潜在对象标识符正则（{id} / {userId} / {orderUuid} / {account_key} 等）
+# Path / Query 参数中潜在对象标识符关键词（BOLA / IDOR 高风险面）。
+# 覆盖 id/uuid/key 等主键，以及 slug/code/handle/email 等间接对象引用。
+ID_KEYWORDS = (
+    "id", "uuid", "key", "account", "order", "user", "tenant",
+    "product", "item", "ref", "slug", "code", "handle", "email",
+)
+
+# Path 中潜在对象标识符正则（{id} / {userId} / {orderUuid} / {account_key} /
+# {postSlug} / {itemCode} / {userHandle} / {email} 等）
 ID_PATH_REGEX = re.compile(
-    r"\{[^{}]*(?:id|uuid|key|account|order|user|tenant|product|item|ref)[^{}]*\}",
+    r"\{[^{}]*(?:id|uuid|key|account|order|user|tenant|product|item|ref|slug|code|handle|email)[^{}]*\}",
     re.IGNORECASE,
 )
 
 # Query 参数中潜在对象标识符
 ID_QUERY_REGEX = re.compile(
-    r"(?:^|&)[^&=]*(?:id|uuid|key|account|order|user|tenant)[^&=]*=",
+    r"(?:^|&)[^&=]*(?:id|uuid|key|account|order|user|tenant|slug|code|handle|email)[^&=]*=",
     re.IGNORECASE,
 )
 
 VALID_METHODS = {"get", "post", "put", "delete", "patch"}
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+def _param_is_object_ref(param: Dict[str, Any]) -> bool:
+    """启发式：声明式参数（path / query）是否可能携带对象级引用。
+
+    仅对参数名做关键词匹配（不波及整段 path，避免 /admin/users 这类
+    非对象引用路径被误标），用于补全模板正则未覆盖的声明式参数。
+    """
+    if not isinstance(param, dict):
+        return False
+    if param.get("in") not in ("path", "query"):
+        return False
+    return any(kw in param.get("name", "").lower() for kw in ID_KEYWORDS)
 
 
 class OpenAPITargetEntry(BaseModel):
@@ -160,7 +181,10 @@ def parse_openapi_spec(
                 if isinstance(p, dict)
             )
 
-            is_auditable = is_path_auditable or has_id_query
+            # 声明式参数启发式：path / query 参数名含对象引用关键词亦计为可审计
+            has_id_param = any(_param_is_object_ref(p) for p in all_params)
+
+            is_auditable = is_path_auditable or has_id_query or has_id_param
 
             # 生成 mock body
             mock_body = _generate_mock_body(
